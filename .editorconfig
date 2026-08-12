@@ -1,0 +1,97 @@
+# EditorConfig - https://editorconfig.org
+
+# Top-most EditorConfig file
+root = true
+
+# All files
+[*]
+charset = utf-8
+end_of_line = crlf
+indent_style = space
+indent_size = 4
+tab_width = 4
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# C# files
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# XML and project files
+[*.{xml,csproj,sln,props,targets}]
+indent_size = 2
+
+# JSON files
+[*.json]
+indent_size = 2
+
+# YAML files
+[*.{yml,yaml}]
+indent_size = 2
+
+# Markdown files
+[*.md]
+trim_trailing_whitespace = false
+
+###############################
+# .NET Coding Conventions     #
+###############################
+
+[*.cs]
+
+# Organize usings
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# this. preferences
+dotnet_style_qualification_for_field = false:suggestion
+dotnet_style_qualification_for_property = false:suggestion
+dotnet_style_qualification_for_method = false:suggestion
+dotnet_style_qualification_for_event = false:suggestion
+
+# Language keywords vs BCL types preferences
+dotnet_style_predefined_type_for_locals_parameters_members = true:suggestion
+dotnet_style_predefined_type_for_member_access = true:suggestion
+
+###############################
+# Naming Conventions          #
+###############################
+
+# PascalCase for classes
+dotnet_naming_rule.classes_should_be_pascal_case.severity = suggestion
+dotnet_naming_rule.classes_should_be_pascal_case.symbols = class_symbols
+dotnet_naming_rule.classes_should_be_pascal_case.style = pascal_case_style
+
+dotnet_naming_symbols.class_symbols.applicable_kinds = class, struct, enum
+dotnet_naming_symbols.class_symbols.applicable_accessibilities = *
+
+# PascalCase for methods
+dotnet_naming_rule.methods_should_be_pascal_case.severity = suggestion
+dotnet_naming_rule.methods_should_be_pascal_case.symbols = method_symbols
+dotnet_naming_rule.methods_should_be_pascal_case.style = pascal_case_style
+
+dotnet_naming_symbols.method_symbols.applicable_kinds = method
+dotnet_naming_symbols.method_symbols.applicable_accessibilities = *
+
+# PascalCase for properties
+dotnet_naming_rule.properties_should_be_pascal_case.severity = suggestion
+dotnet_naming_rule.properties_should_be_pascal_case.symbols = property_symbols
+dotnet_naming_rule.properties_should_be_pascal_case.style = pascal_case_style
+
+dotnet_naming_symbols.property_symbols.applicable_kinds = property
+dotnet_naming_symbols.property_symbols.applicable_accessibilities = *
+
+# Interface should begin with 'I'
+dotnet_naming_rule.interfaces_should_begin_with_i.severity = suggestion
+dotnet_naming_rule.interfaces_should_begin_with_i.symbols = interface_symbols
+dotnet_naming_rule.interfaces_should_begin_with_i.style = begins_with_i_style
+
+dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
+dotnet_naming_symbols.interface_symbols.applicable_accessibilities = *
+
+# Naming styles
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+
+dotnet_naming_style.begins_with_i_style.required_prefix = I
+dotnet_naming_style.begins_with_i_style.capitalization = pascal_case
