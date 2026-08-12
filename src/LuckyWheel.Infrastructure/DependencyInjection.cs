@@ -1,3 +1,6 @@
+using System;
+using LuckyWheel.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -9,8 +12,31 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // Register Infrastructure layer services here in future phases
-        // (e.g., DbContext, Repositories, External Services)
+        var connectionString = configuration.GetConnectionString("DefaultConnection");
+
+        services.AddDbContext<ApplicationDbContext>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                // Note: Delayed check or immediate warning, DbContext configuration will throw on usage if missing
+                options.UseSqlServer(
+                    "Server=invalid;Database=invalid;Trusted_Connection=False;",
+                    sqlOptions => sqlOptions.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName));
+                return;
+            }
+
+            options.UseSqlServer(
+                connectionString,
+                sqlOptions =>
+                {
+                    sqlOptions.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+                    sqlOptions.EnableRetryOnFailure(
+                        maxRetryCount: 5,
+                        maxRetryDelay: TimeSpan.FromSeconds(10),
+                        errorNumbersToAdd: null);
+                });
+        });
+
         return services;
     }
 }

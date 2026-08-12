@@ -1,5 +1,6 @@
 using LuckyWheel.Application;
 using LuckyWheel.Infrastructure;
+using LuckyWheel.Infrastructure.Persistence;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -24,7 +25,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 // Health Checks
-builder.Services.AddHealthChecks();
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ApplicationDbContext>();
 
 var app = builder.Build();
 

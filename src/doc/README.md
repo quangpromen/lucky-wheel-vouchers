@@ -17,15 +17,16 @@ Business Rules là nguồn nghiệp vụ chính thức. Tài liệu từng giai 
 | 0 | Business Rules | `LUCKY_WHEEL_BUSINESS_RULES.md` | COMPLETED |
 | 1 | Project Initialization | `01-PROJECT-INITIALIZATION.md` | COMPLETED |
 | 2 | Domain Layer | `02-DOMAIN-LAYER.md` | COMPLETED |
-| 3 | Database & EF Core | `03-DATABASE-EF-CORE.md` | NOT_STARTED |
+| 3 | Database & EF Core | `03-DATABASE-EF-CORE.md` | COMPLETED |
+| 4 | Shared Components | `04-SHARED-COMPONENTS.md` | NOT_STARTED |
 
 ## Giai đoạn hiện tại
 
-Giai đoạn vừa hoàn thành: Giai đoạn 2 — Domain Layer.
+Giai đoạn vừa hoàn thành: Giai đoạn 3 — Database và Entity Framework Core.
 
 ## Giai đoạn tiếp theo
 
-Giai đoạn 3 — Database và Entity Framework Core.
+Giai đoạn 4 — Shared Components.
 
 ## Quy tắc cập nhật tài liệu
 
