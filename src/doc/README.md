@@ -19,19 +19,21 @@ Business Rules là nguồn nghiệp vụ chính thức. Tài liệu từng giai 
 | 2 | Domain Layer | `02-DOMAIN-LAYER.md` | COMPLETED |
 | 3 | Database & EF Core | `03-DATABASE-EF-CORE.md` | COMPLETED |
 | 4 | Shared Components, Validation & Error Handling | `04-SHARED-COMPONENTS-VALIDATION-ERROR-HANDLING.md` | COMPLETED |
-| 5 | Authentication & Authorization | *(chưa bắt đầu)* | NOT_STARTED |
+| 5 | Authentication & Authorization | `05-ADMIN-AUTHENTICATION-JWT.md` | IN_PROGRESS |
 
 ## Giai đoạn hiện tại
 
-Giai đoạn vừa hoàn thành: **Giai đoạn 4 — Shared Components, Validation và Global Error Handling.**
+Giai đoạn đang triển khai: **Giai đoạn 5 — Admin Authentication & Authorization (JWT).**
 
-Kết quả kiểm tra cuối giai đoạn:
-- `dotnet build`: PASS (0 error, 0 warning)
-- `dotnet test`: PASS — **106/106** (74 Unit Tests + 32 Integration Tests)
+Kết quả kiểm tra Giai đoạn 5 (Security & Git Readiness Review):
+- `dotnet restore`: PASS
+- `dotnet build --no-restore`: PASS (0 error, 0 warning)
+- Unit: PASS 76/76; API integration không phụ thuộc SQL Server: PASS
+- Persistence integration: 18 test bị block bởi SQL Server local trong môi trường review; chi tiết ở `05-ADMIN-AUTHENTICATION-JWT.md`.
 
 ## Giai đoạn tiếp theo
 
-Giai đoạn 5 — Authentication & Authorization (JWT, Admin login).
+Giai đoạn 6 — Admin Wheel/Prize management (chưa triển khai).
 
 ## Quy tắc cập nhật tài liệu
 
@@ -41,6 +43,13 @@ Sau mỗi giai đoạn, AI/developer phải:
 - Chạy build và test.
 - Tạo hoặc cập nhật tài liệu tương ứng.
 - Chỉ đánh dấu `COMPLETED` khi code và test đạt yêu cầu.
+
+## Security & Git Readiness Review — Giai đoạn 5
+
+- Review ngày 2026-08-13 (UTC), bao gồm thay đổi tracked/staged/unstaged/untracked, cấu hình JWT, `.gitignore`, package và documentation.
+- Không phát hiện secret thật trong file hiện tại; không có build artifact, database, certificate/private-key hay secret file đang được Git track.
+- Lịch sử Git được quét theo heuristic; chỉ có marker fixture test cũ bị nhận diện nhầm, không phải credential. Không rewrite Git history.
+- `dotnet restore` và build pass; persistence integration bị block bởi SQL Server local không hỗ trợ encryption. Chi tiết và kết quả test đầy đủ ở `05-ADMIN-AUTHENTICATION-JWT.md`.
 
 ## Verification / Review (Giai đoạn 4)
 

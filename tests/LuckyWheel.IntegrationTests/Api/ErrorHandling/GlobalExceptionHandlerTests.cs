@@ -115,7 +115,7 @@ public sealed class GlobalExceptionHandlerTests : IClassFixture<ErrorHandlingTes
 
         // Ensure sensitive content from the exception message is not leaked
         var bodyText = body.GetRawText();
-        Assert.DoesNotContain("password=secret123", bodyText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("test-sensitive-marker", bodyText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("at System.", bodyText, StringComparison.OrdinalIgnoreCase);
     }
 

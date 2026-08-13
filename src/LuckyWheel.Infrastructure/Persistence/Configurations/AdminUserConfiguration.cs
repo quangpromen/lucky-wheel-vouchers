@@ -20,6 +20,12 @@ public class AdminUserConfiguration : IEntityTypeConfiguration<AdminUser>
             .HasMaxLength(200)
             .IsRequired();
 
+        builder.Property(x => x.PasswordHash)
+            .HasMaxLength(1000)
+            .IsRequired();
+
+        builder.Property(x => x.LastLoginAtUtc);
+
         builder.Property(x => x.IsActive)
             .IsRequired();
 

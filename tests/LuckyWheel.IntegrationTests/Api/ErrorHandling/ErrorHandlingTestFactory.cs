@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
 
 namespace LuckyWheel.IntegrationTests.Api.ErrorHandling;
 
@@ -23,6 +24,7 @@ public sealed class ErrorHandlingTestFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.ConfigureLogging(logging => logging.ClearProviders());
 
         builder.ConfigureServices(services =>
         {
@@ -70,9 +72,9 @@ public sealed class ErrorHandlingTestFactory : WebApplicationFactory<Program>
                 endpoints.MapGet("/test-errors/domain-exception", _ =>
                     throw new DomainException("SPIN_LIMIT_EXCEEDED", "Spin limit exceeded for this user."));
 
-                // Trigger generic unhandled exception (message contains "sensitive" data to verify it's not leaked)
+                // Trigger generic unhandled exception with a non-sensitive marker to verify it is not leaked.
                 endpoints.MapGet("/test-errors/unhandled", _ =>
-                    throw new InvalidOperationException("Unexpected internal error with sensitive data: password=secret123"));
+                    throw new InvalidOperationException("Unexpected internal error marker: test-sensitive-marker"));
 
                 // Simple success endpoint (for correlation id checks)
                 endpoints.MapGet("/test-errors/ok", async ctx =>

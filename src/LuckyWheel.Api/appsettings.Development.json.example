@@ -7,5 +7,16 @@
   },
   "ConnectionStrings": {
     "DefaultConnection": "Server=<YOUR_SERVER>;Database=LuckyWheelDb;Trusted_Connection=True;TrustServerCertificate=True;"
+  },
+  "Jwt": {
+    "Issuer": "LuckyWheel.Api",
+    "Audience": "LuckyWheel.Admin",
+    "AccessTokenLifetimeMinutes": 30,
+    "SigningKey": "<provide-via-user-secrets-or-environment>"
+  },
+  "BootstrapAdmin": {
+    "Username": "<your-admin-email>",
+    "Password": "<strong-password-via-user-secrets>",
+    "DisplayName": "Administrator"
   }
 }

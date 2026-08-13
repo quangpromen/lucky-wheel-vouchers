@@ -339,6 +339,9 @@ MigrationBackup/
 ## ----------------------------------------
 ## Environment & Secrets
 ## ----------------------------------------
+.env
+.env.*
+!.env.example
 *.env
 *.env.*
 !*.env.example
@@ -348,11 +351,18 @@ MigrationBackup/
 appsettings.Development.json
 appsettings.Staging.json
 appsettings.Production.json
+appsettings.Local.json
 appsettings.*.local.json
 
 # .NET User Secrets
 secrets.json
 usersecrets/
+*.pfx
+*.p12
+*.pem
+*.key
+*.db
+*.bak
 
 # Azure / cloud credentials
 *.publishsettings

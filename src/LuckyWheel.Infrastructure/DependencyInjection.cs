@@ -1,10 +1,14 @@
 using System;
 using LuckyWheel.Application.Common.Time;
+using LuckyWheel.Application.Common.Authentication;
+using LuckyWheel.Domain.Entities;
+using LuckyWheel.Infrastructure.Authentication;
 using LuckyWheel.Infrastructure.Persistence;
 using LuckyWheel.Infrastructure.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Identity;
 
 namespace LuckyWheel.Infrastructure;
 
@@ -16,6 +20,12 @@ public static class DependencyInjection
     {
         // ── Clock ──────────────────────────────────────────────────────────
         services.AddSingleton<IClock, SystemClock>();
+        services.AddScoped<IPasswordHasher<AdminUser>, PasswordHasher<AdminUser>>();
+        services.AddScoped<IAdminAuthenticationService, AdminAuthenticationService>();
+        services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
+        services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
+        services.Configure<BootstrapAdminOptions>(configuration.GetSection(BootstrapAdminOptions.SectionName));
+        services.AddScoped<BootstrapAdminSeeder>();
 
         // ── Database ───────────────────────────────────────────────────────
         var connectionString = configuration.GetConnectionString("DefaultConnection");
@@ -46,4 +56,3 @@ public static class DependencyInjection
         return services;
     }
 }
-

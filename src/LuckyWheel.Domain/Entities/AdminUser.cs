@@ -6,8 +6,10 @@ namespace LuckyWheel.Domain.Entities;
 public class AdminUser : AuditableEntity
 {
     public string Email { get; private set; }
+    public string PasswordHash { get; private set; } = string.Empty;
     public string DisplayName { get; private set; }
     public bool IsActive { get; private set; }
+    public DateTime? LastLoginAtUtc { get; private set; }
 
     public AdminUser(
         string email,
@@ -23,6 +25,21 @@ public class AdminUser : AuditableEntity
         DisplayName = displayName;
         IsActive = true;
         CreatedAtUtc = createdAtUtc;
+    }
+
+    public void SetPasswordHash(string passwordHash, DateTime updatedAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(passwordHash))
+            throw new DomainException("ADMIN_PASSWORD_HASH_REQUIRED", "Password hash is required.");
+
+        PasswordHash = passwordHash;
+        UpdatedAtUtc = updatedAtUtc;
+    }
+
+    public void RecordLogin(DateTime loggedInAtUtc)
+    {
+        LastLoginAtUtc = loggedInAtUtc;
+        UpdatedAtUtc = loggedInAtUtc;
     }
 
     public void Activate(DateTime updatedAtUtc)
