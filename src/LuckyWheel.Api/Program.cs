@@ -1,18 +1,31 @@
+using LuckyWheel.Api.Errors;
+using LuckyWheel.Api.Middleware;
 using LuckyWheel.Application;
 using LuckyWheel.Infrastructure;
 using LuckyWheel.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-builder.Services.AddControllers();
+// ── MVC / JSON ────────────────────────────────────────────────────────────────
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Ensure camelCase serialization for all API responses
+        options.JsonSerializerOptions.PropertyNamingPolicy =
+            System.Text.Json.JsonNamingPolicy.CamelCase;
+    });
 
-// Register Application & Infrastructure layers
+// ── Problem Details (RFC 7807) ─────────────────────────────────────────────────
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+// ── Application & Infrastructure layers ─────────────────────────────────────
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
-// Swagger/OpenAPI
+// ── Swagger / OpenAPI ─────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -24,13 +37,24 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// Health Checks
+// ── Health Checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<ApplicationDbContext>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// ── Middleware pipeline (order matters) ────────────────────────────────────────
+
+// 1. Exception handler must be first so it catches errors from all subsequent middleware
+app.UseExceptionHandler();
+
+// 2. Correlation id — sets X-Correlation-ID on every request/response
+app.UseMiddleware<CorrelationIdMiddleware>();
+
+// 3. HTTPS redirect
+app.UseHttpsRedirection();
+
+// 4. Swagger (Development only)
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -41,12 +65,16 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseHttpsRedirection();
-
+// 5. Authorization
 app.UseAuthorization();
 
+// 6. Controllers
 app.MapControllers();
 
+// 7. Health check
 app.MapHealthChecks("/health");
 
 app.Run();
+
+// Make Program class accessible to WebApplicationFactory in integration tests
+public partial class Program { }

@@ -1,5 +1,7 @@
 using System;
+using LuckyWheel.Application.Common.Time;
 using LuckyWheel.Infrastructure.Persistence;
+using LuckyWheel.Infrastructure.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +14,10 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        // ── Clock ──────────────────────────────────────────────────────────
+        services.AddSingleton<IClock, SystemClock>();
+
+        // ── Database ───────────────────────────────────────────────────────
         var connectionString = configuration.GetConnectionString("DefaultConnection");
 
         services.AddDbContext<ApplicationDbContext>(options =>
@@ -40,3 +46,4 @@ public static class DependencyInjection
         return services;
     }
 }
+

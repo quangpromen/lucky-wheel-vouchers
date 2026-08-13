@@ -19,6 +19,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\LuckyWheel.Domain\LuckyWheel.Domain.csproj" />
     <ProjectReference Include="..\..\src\LuckyWheel.Application\LuckyWheel.Application.csproj" />
+    <ProjectReference Include="..\..\src\LuckyWheel.Infrastructure\LuckyWheel.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\LuckyWheel.Api\LuckyWheel.Api.csproj" />
   </ItemGroup>
 
 </Project>
