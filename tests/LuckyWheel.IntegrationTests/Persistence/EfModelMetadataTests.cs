@@ -36,7 +36,7 @@ public class EfModelMetadataTests
         Assert.Equal("[PrizeKeyId] IS NOT NULL", FindIndex<SpinHistory>(context, nameof(SpinHistory.PrizeKeyId)).GetFilter());
         Assert.Equal("[IsActive] = 1", FindIndex<WinnerLock>(context, nameof(WinnerLock.WheelId), nameof(WinnerLock.EmailNormalized)).GetFilter());
 
-        foreach (var entityType in new[] { typeof(WheelVersion), typeof(Prize), typeof(PrizeKey), typeof(WinnerLock) })
+        foreach (var entityType in new[] { typeof(WheelVersion), typeof(Prize), typeof(WheelVersionPrize), typeof(PrizeKey), typeof(WinnerLock) })
         {
             var rowVersion = context.Model.FindEntityType(entityType)!.FindProperty("RowVersion")!;
             Assert.True(rowVersion.IsConcurrencyToken);

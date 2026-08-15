@@ -31,6 +31,11 @@ public class WheelVersionPrizeConfiguration : IEntityTypeConfiguration<WheelVers
         builder.Property(x => x.IsNoPrize)
             .IsRequired();
 
+        builder.Property<byte[]>("RowVersion")
+            .IsRowVersion()
+            .IsRequired()
+            .IsConcurrencyToken();
+
         builder.HasOne<WheelVersion>()
             .WithMany()
             .HasForeignKey(x => x.WheelVersionId)
@@ -48,7 +53,7 @@ public class WheelVersionPrizeConfiguration : IEntityTypeConfiguration<WheelVers
 
         builder.ToTable(t =>
         {
-            t.HasCheckConstraint("CK_WheelVersionPrizes_ProbabilityWeight", "[ProbabilityWeight] >= 0");
+            t.HasCheckConstraint("CK_WheelVersionPrizes_ProbabilityWeight", "[ProbabilityWeight] > 0");
             t.HasCheckConstraint("CK_WheelVersionPrizes_DisplayOrder", "[DisplayOrder] > 0");
             t.HasCheckConstraint("CK_WheelVersionPrizes_PrizeReference", "([IsNoPrize] = 1 AND [PrizeId] IS NULL) OR ([IsNoPrize] = 0 AND [PrizeId] IS NOT NULL)");
         });

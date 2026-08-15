@@ -186,7 +186,7 @@ Việc xóa một Wheel hoặc Prize sẽ thất bại ở cấp độ database 
 - Connection string local được lưu trữ độc lập bằng `.NET User Secrets` cho project `LuckyWheel.Api`:
   ```bash
   dotnet user-secrets init --project src/LuckyWheel.Api
-  dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=localhost;Database=LuckyWheelDb;User ID=sa;Password=...;TrustServerCertificate=True" --project src/LuckyWheel.Api
+  dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=localhost;Database=LuckyWheelDb;User ID=sa;Password=<your-local-password>;TrustServerCertificate=True" --project src/LuckyWheel.Api
   ```
 - `DesignTimeDbContextFactory` và Integration Test đọc connection string từ User Secrets và Environment Variables, đảm bảo không có mật khẩu nào bị commit lên repository hay in ra log.
 

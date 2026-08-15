@@ -9,6 +9,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Identity;
+using LuckyWheel.Application.Features.Admin;
+using LuckyWheel.Infrastructure.Admin;
 
 namespace LuckyWheel.Infrastructure;
 
@@ -26,6 +28,8 @@ public static class DependencyInjection
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
         services.Configure<BootstrapAdminOptions>(configuration.GetSection(BootstrapAdminOptions.SectionName));
         services.AddScoped<BootstrapAdminSeeder>();
+        services.AddScoped<IAdminManagementService, AdminManagementService>();
+        services.AddHttpContextAccessor();
 
         // ── Database ───────────────────────────────────────────────────────
         var connectionString = configuration.GetConnectionString("DefaultConnection");

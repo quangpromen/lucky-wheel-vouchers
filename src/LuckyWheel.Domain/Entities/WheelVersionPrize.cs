@@ -25,8 +25,8 @@ public class WheelVersionPrize : AuditableEntity
     {
         if (wheelVersionId == Guid.Empty)
             throw new DomainException("WVP_INVALID_VERSION_ID", "WheelVersionId cannot be empty.");
-        if (probabilityWeight < 0)
-            throw new DomainException("WVP_INVALID_WEIGHT", "ProbabilityWeight cannot be negative.");
+        if (probabilityWeight <= 0)
+            throw new DomainException("WVP_INVALID_WEIGHT", "ProbabilityWeight must be greater than zero.");
         if (displayOrder <= 0)
             throw new DomainException("WVP_INVALID_ORDER", "DisplayOrder must be > 0.");
         if (string.IsNullOrWhiteSpace(color))
@@ -54,8 +54,8 @@ public class WheelVersionPrize : AuditableEntity
         string? imageUrl,
         DateTime updatedAtUtc)
     {
-        if (probabilityWeight < 0)
-            throw new DomainException("WVP_INVALID_WEIGHT", "ProbabilityWeight cannot be negative.");
+        if (probabilityWeight <= 0)
+            throw new DomainException("WVP_INVALID_WEIGHT", "ProbabilityWeight must be greater than zero.");
         if (displayOrder <= 0)
             throw new DomainException("WVP_INVALID_ORDER", "DisplayOrder must be > 0.");
         if (string.IsNullOrWhiteSpace(color))

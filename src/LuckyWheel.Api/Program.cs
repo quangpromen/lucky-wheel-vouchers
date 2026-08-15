@@ -118,6 +118,7 @@ builder.Services.AddSwaggerGen(options =>
     {
         [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }] = Array.Empty<string>()
     });
+    options.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, "LuckyWheel.Api.xml"));
 });
 
 // ── Health Checks ─────────────────────────────────────────────────────────────

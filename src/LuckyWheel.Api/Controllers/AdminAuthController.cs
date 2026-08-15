@@ -10,6 +10,7 @@ namespace LuckyWheel.Api.Controllers;
 [Route("api/admin/auth")]
 public sealed class AdminAuthController(IAdminAuthenticationService authenticationService) : ControllerBase
 {
+    /// <summary>Đăng nhập Admin và nhận JWT access token.</summary>
     [AllowAnonymous]
     [HttpPost("login")]
     public async Task<IActionResult> Login(AdminLoginRequest request, CancellationToken cancellationToken)
@@ -25,6 +26,7 @@ public sealed class AdminAuthController(IAdminAuthenticationService authenticati
         return Ok(new { result.AccessToken, TokenType = "Bearer", result.ExpiresAtUtc, result.Admin });
     }
 
+    /// <summary>Lấy thông tin Admin đang đăng nhập và kiểm tra token.</summary>
     [Authorize(Policy = "AdminOnly")]
     [HttpGet("me")]
     public async Task<IActionResult> Me(CancellationToken cancellationToken)

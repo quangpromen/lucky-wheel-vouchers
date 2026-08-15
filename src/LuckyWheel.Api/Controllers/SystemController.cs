@@ -16,6 +16,7 @@ public class SystemController : ControllerBase
     /// <summary>
     /// Returns basic application information for system health verification.
     /// </summary>
+    /// <summary>Xem thông tin cơ bản của hệ thống (public).</summary>
     [HttpGet("info")]
     public IActionResult GetInfo()
     {

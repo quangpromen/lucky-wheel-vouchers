@@ -20,10 +20,11 @@ Business Rules là nguồn nghiệp vụ chính thức. Tài liệu từng giai 
 | 3 | Database & EF Core | `03-DATABASE-EF-CORE.md` | COMPLETED |
 | 4 | Shared Components, Validation & Error Handling | `04-SHARED-COMPONENTS-VALIDATION-ERROR-HANDLING.md` | COMPLETED |
 | 5 | Authentication & Authorization | `05-ADMIN-AUTHENTICATION-JWT.md` | IN_PROGRESS |
+| 6 | Admin Wheel/Version/Prize Management | `06-ADMIN-WHEEL-VERSION-PRIZE-MANAGEMENT.md` | COMPLETED |
 
 ## Giai đoạn hiện tại
 
-Giai đoạn đang triển khai: **Giai đoạn 5 — Admin Authentication & Authorization (JWT).**
+Giai đoạn vừa hoàn thành: **Giai đoạn 6 — Admin Wheel, Wheel Version và Prize Management.**
 
 Kết quả kiểm tra Giai đoạn 5 (Security & Git Readiness Review):
 - `dotnet restore`: PASS
@@ -33,7 +34,7 @@ Kết quả kiểm tra Giai đoạn 5 (Security & Git Readiness Review):
 
 ## Giai đoạn tiếp theo
 
-Giai đoạn 6 — Admin Wheel/Prize management (chưa triển khai).
+Giai đoạn 7 — Prize Key management/activation (chưa triển khai).
 
 ## Quy tắc cập nhật tài liệu
 
@@ -50,6 +51,14 @@ Sau mỗi giai đoạn, AI/developer phải:
 - Không phát hiện secret thật trong file hiện tại; không có build artifact, database, certificate/private-key hay secret file đang được Git track.
 - Lịch sử Git được quét theo heuristic; chỉ có marker fixture test cũ bị nhận diện nhầm, không phải credential. Không rewrite Git history.
 - `dotnet restore` và build pass; persistence integration bị block bởi SQL Server local không hỗ trợ encryption. Chi tiết và kết quả test đầy đủ ở `05-ADMIN-AUTHENTICATION-JWT.md`.
+
+## Security & Git Readiness Review — Giai đoạn 6
+
+- Review ngày 2026-08-13: toàn bộ endpoint Giai đoạn 6 yêu cầu `AdminOnly`; test HTTP thiếu token trả 401 và test EF metadata RowVersion đều pass.
+- `dotnet restore` PASS; build PASS (0 warning/error); unit PASS 80/80; integration khả dụng PASS 26/26. Full test còn 18 persistence tests bị block bởi SQL Server local không hỗ trợ encryption.
+- Secret scan file hiện tại không phát hiện credential/token/key thật; tracked files không có build output, log, database, backup, local secret config hay certificate/private key.
+- Đã thay một password-like connection-string example trong tài liệu Giai đoạn 3 bằng placeholder. Mẫu cũ vẫn tồn tại trong Git history; không rewrite history. Cần xác nhận đó là dữ liệu giả hoặc rotate credential trước khi push/deploy nếu từng được sử dụng.
+- Không thêm package ở Giai đoạn 6. Chi tiết tại `06-ADMIN-WHEEL-VERSION-PRIZE-MANAGEMENT.md`.
 
 ## Verification / Review (Giai đoạn 4)
 
