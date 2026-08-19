@@ -8,7 +8,9 @@ public class PrizeKey : AuditableEntity
 {
     public Guid PrizeId { get; private set; }
     public string CodeHash { get; private set; }
-    public string CodeEncrypted { get; private set; }
+    public byte[] EncryptedCode { get; private set; }
+    public byte[] EncryptionNonce { get; private set; }
+    public byte[] EncryptionTag { get; private set; }
     public PrizeKeyStatus Status { get; private set; }
     public Guid? AssignedSpinId { get; private set; }
     public DateTime? AssignedAtUtc { get; private set; }
@@ -20,19 +22,23 @@ public class PrizeKey : AuditableEntity
     public PrizeKey(
         Guid prizeId,
         string codeHash,
-        string codeEncrypted,
+        byte[] encryptedCode,
+        byte[] encryptionNonce,
+        byte[] encryptionTag,
         DateTime createdAtUtc)
     {
         if (prizeId == Guid.Empty)
             throw new DomainException("PRIZE_KEY_INVALID_PRIZE_ID", "PrizeId cannot be empty.");
         if (string.IsNullOrWhiteSpace(codeHash))
             throw new DomainException("PRIZE_KEY_HASH_REQUIRED", "CodeHash is required.");
-        if (string.IsNullOrWhiteSpace(codeEncrypted))
+        if (encryptedCode is not { Length: > 0 } || encryptionNonce is not { Length: 12 } || encryptionTag is not { Length: 16 })
             throw new DomainException("PRIZE_KEY_ENCRYPTED_REQUIRED", "CodeEncrypted is required.");
 
         PrizeId = prizeId;
         CodeHash = codeHash;
-        CodeEncrypted = codeEncrypted;
+        EncryptedCode = encryptedCode;
+        EncryptionNonce = encryptionNonce;
+        EncryptionTag = encryptionTag;
         Status = PrizeKeyStatus.Available;
         CreatedAtUtc = createdAtUtc;
     }

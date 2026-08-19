@@ -13,6 +13,14 @@ public sealed class AdminWheelVersionsController(IAdminManagementService service
     /// <summary>Cập nhật lịch chạy của Draft Version.</summary>
     [HttpPut("{id:guid}")] public Task<WheelVersionDto> Update(Guid id, UpdateDraftWheelVersionRequest request, CancellationToken ct) => service.UpdateDraftVersionAsync(id, request, ct);
 
+    /// <summary>Kích hoạt Draft Version sang Active.</summary>
+    [HttpPost("{id:guid}/activate")]
+    public Task<WheelVersionDto> Activate(Guid id, ActivateDraftWheelVersionRequest request, CancellationToken ct) => service.ActivateVersionAsync(id, request, ct);
+
+    /// <summary>Đóng Active Version sang Closed.</summary>
+    [HttpPost("{id:guid}/close")]
+    public Task<WheelVersionDto> Close(Guid id, CloseActiveWheelVersionRequest request, CancellationToken ct) => service.CloseVersionAsync(id, request, ct);
+
     /// <summary>Thêm ô giải thưởng hoặc ô không trúng vào Draft Version.</summary>
     [HttpPost("{versionId:guid}/prizes")]
     public async Task<ActionResult<WheelVersionPrizeDto>> AddPrize(Guid versionId, CreateWheelVersionPrizeRequest request, CancellationToken ct)

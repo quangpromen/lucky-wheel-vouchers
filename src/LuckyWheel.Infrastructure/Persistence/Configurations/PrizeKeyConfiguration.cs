@@ -20,8 +20,16 @@ public class PrizeKeyConfiguration : IEntityTypeConfiguration<PrizeKey>
             .HasMaxLength(256)
             .IsRequired();
 
-        builder.Property(x => x.CodeEncrypted)
-            .HasMaxLength(1000)
+        builder.Property(x => x.EncryptedCode)
+            .HasMaxLength(64)
+            .IsRequired();
+
+        builder.Property(x => x.EncryptionNonce)
+            .HasMaxLength(12)
+            .IsRequired();
+
+        builder.Property(x => x.EncryptionTag)
+            .HasMaxLength(16)
             .IsRequired();
 
         builder.Property(x => x.Status)

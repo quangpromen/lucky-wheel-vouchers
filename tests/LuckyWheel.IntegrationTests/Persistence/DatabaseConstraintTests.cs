@@ -120,11 +120,11 @@ public class DatabaseConstraintTests
         await context.SaveChangesAsync();
 
         var hash = $"hash-{Guid.NewGuid():N}";
-        var key1 = new PrizeKey(prize.Id, hash, "enc1", DateTime.UtcNow);
+        var key1 = TestPrizeKey(prize.Id, hash);
         context.PrizeKeys.Add(key1);
         await context.SaveChangesAsync();
 
-        var key2 = new PrizeKey(prize.Id, hash, "enc2", DateTime.UtcNow);
+        var key2 = TestPrizeKey(prize.Id, hash);
         context.PrizeKeys.Add(key2);
 
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
@@ -146,8 +146,8 @@ public class DatabaseConstraintTests
         context.Prizes.Add(prize);
         await context.SaveChangesAsync();
 
-        var key1 = new PrizeKey(prize.Id, $"hash-l1-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
-        var key2 = new PrizeKey(prize.Id, $"hash-l2-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
+        var key1 = TestPrizeKey(prize.Id, $"hash-l1-{Guid.NewGuid():N}");
+        var key2 = TestPrizeKey(prize.Id, $"hash-l2-{Guid.NewGuid():N}");
         context.PrizeKeys.AddRange(key1, key2);
         await context.SaveChangesAsync();
 
@@ -183,8 +183,8 @@ public class DatabaseConstraintTests
         context.Prizes.Add(prize);
         await context.SaveChangesAsync();
 
-        var key1 = new PrizeKey(prize.Id, $"hash-in1-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
-        var key2 = new PrizeKey(prize.Id, $"hash-in2-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
+        var key1 = TestPrizeKey(prize.Id, $"hash-in1-{Guid.NewGuid():N}");
+        var key2 = TestPrizeKey(prize.Id, $"hash-in2-{Guid.NewGuid():N}");
         context.PrizeKeys.AddRange(key1, key2);
         await context.SaveChangesAsync();
 
@@ -224,7 +224,7 @@ public class DatabaseConstraintTests
         context.Prizes.Add(prize);
         await context.SaveChangesAsync();
 
-        var key = new PrizeKey(prize.Id, $"hash-dupkey-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
+        var key = TestPrizeKey(prize.Id, $"hash-dupkey-{Guid.NewGuid():N}");
         context.PrizeKeys.Add(key);
         await context.SaveChangesAsync();
 
@@ -254,14 +254,14 @@ public class DatabaseConstraintTests
         context.Prizes.Add(prize);
         await context.SaveChangesAsync();
 
-        var key = new PrizeKey(prize.Id, $"hash-redem-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
+        var key = TestPrizeKey(prize.Id, $"hash-redem-{Guid.NewGuid():N}");
         context.PrizeKeys.Add(key);
         await context.SaveChangesAsync();
 
         var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, "a@ex.com", "a@ex.com", prize.Id, key.Id, Guid.NewGuid(), $"rcpt-r1-{Guid.NewGuid():N}", DateTime.UtcNow);
         var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, "b@ex.com", "b@ex.com", prize.Id, key.Id, Guid.NewGuid(), $"rcpt-r2-{Guid.NewGuid():N}", DateTime.UtcNow);
         // Note: use different keys for spin2 to avoid spin key constraint
-        var key2 = new PrizeKey(prize.Id, $"hash-redem2-{Guid.NewGuid():N}", "enc", DateTime.UtcNow);
+        var key2 = TestPrizeKey(prize.Id, $"hash-redem2-{Guid.NewGuid():N}");
         context.PrizeKeys.Add(key2);
         await context.SaveChangesAsync();
 
@@ -447,4 +447,7 @@ public class DatabaseConstraintTests
 
         await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => second.SaveChangesAsync());
     }
+
+    private static PrizeKey TestPrizeKey(Guid prizeId, string hash) =>
+        new(prizeId, hash, [1], new byte[12], new byte[16], DateTime.UtcNow);
 }

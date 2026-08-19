@@ -30,6 +30,13 @@ public static class DependencyInjection
         services.AddScoped<BootstrapAdminSeeder>();
         services.AddScoped<IAdminManagementService, AdminManagementService>();
         services.AddHttpContextAccessor();
+        services.AddScoped<ICurrentAdminContext, CurrentAdminContext>();
+
+        // ── PrizeKey Protection & Generator ────────────────────────────────
+        services.Configure<PrizeKeys.PrizeKeyProtectionOptions>(configuration.GetSection(PrizeKeys.PrizeKeyProtectionOptions.SectionName));
+        services.AddSingleton<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyGenerator, PrizeKeys.CryptoPrizeKeyGenerator>();
+        services.AddSingleton<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyProtector, PrizeKeys.AesGcmPrizeKeyProtector>();
+        services.AddScoped<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyService, PrizeKeys.PrizeKeyService>();
 
         // ── Database ───────────────────────────────────────────────────────
         var connectionString = configuration.GetConnectionString("DefaultConnection");

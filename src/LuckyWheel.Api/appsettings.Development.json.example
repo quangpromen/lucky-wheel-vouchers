@@ -18,5 +18,8 @@
     "Username": "<your-admin-email>",
     "Password": "<strong-password-via-user-secrets>",
     "DisplayName": "Administrator"
+  },
+  "PrizeKeyProtection": {
+    "EncryptionKey": "<base64-encoded-32-byte-key-via-user-secrets>"
   }
 }

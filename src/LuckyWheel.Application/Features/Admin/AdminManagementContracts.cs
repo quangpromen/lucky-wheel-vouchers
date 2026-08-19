@@ -31,6 +31,9 @@ public sealed record UpdateWheelVersionPrizeRequest(int Weight, int DisplayOrder
 public sealed record ReorderWheelVersionPrizeItem(Guid Id, int DisplayOrder, string? RowVersion);
 public sealed record ReorderWheelVersionPrizesRequest(IReadOnlyList<ReorderWheelVersionPrizeItem>? Items);
 
+public sealed record ActivateDraftWheelVersionRequest(string? RowVersion);
+public sealed record CloseActiveWheelVersionRequest(string? RowVersion);
+
 public interface IAdminManagementService
 {
     Task<WheelDto> CreateWheelAsync(CreateWheelRequest request, CancellationToken ct);
@@ -45,6 +48,8 @@ public interface IAdminManagementService
     Task<WheelVersionDto> GetVersionAsync(Guid id, CancellationToken ct);
     Task<PageResult<WheelVersionDto>> GetVersionsAsync(Guid wheelId, int page, int pageSize, CancellationToken ct);
     Task<WheelVersionDto> UpdateDraftVersionAsync(Guid id, UpdateDraftWheelVersionRequest request, CancellationToken ct);
+    Task<WheelVersionDto> ActivateVersionAsync(Guid versionId, ActivateDraftWheelVersionRequest request, CancellationToken ct);
+    Task<WheelVersionDto> CloseVersionAsync(Guid versionId, CloseActiveWheelVersionRequest request, CancellationToken ct);
     Task<WheelVersionPrizeDto> AddVersionPrizeAsync(Guid versionId, CreateWheelVersionPrizeRequest request, CancellationToken ct);
     Task<WheelVersionPrizeDto> UpdateVersionPrizeAsync(Guid versionId, Guid id, UpdateWheelVersionPrizeRequest request, CancellationToken ct);
     Task DeleteVersionPrizeAsync(Guid versionId, Guid id, string rowVersion, CancellationToken ct);

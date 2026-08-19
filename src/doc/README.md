@@ -19,22 +19,24 @@ Business Rules là nguồn nghiệp vụ chính thức. Tài liệu từng giai 
 | 2 | Domain Layer | `02-DOMAIN-LAYER.md` | COMPLETED |
 | 3 | Database & EF Core | `03-DATABASE-EF-CORE.md` | COMPLETED |
 | 4 | Shared Components, Validation & Error Handling | `04-SHARED-COMPONENTS-VALIDATION-ERROR-HANDLING.md` | COMPLETED |
-| 5 | Authentication & Authorization | `05-ADMIN-AUTHENTICATION-JWT.md` | IN_PROGRESS |
+| 5 | Authentication & Authorization | `05-ADMIN-AUTHENTICATION-JWT.md` | COMPLETED |
 | 6 | Admin Wheel/Version/Prize Management | `06-ADMIN-WHEEL-VERSION-PRIZE-MANAGEMENT.md` | COMPLETED |
+| 7 | Prize Key Management & Wheel Version Activation | `07-PRIZE-KEY-MANAGEMENT-AND-VERSION-ACTIVATION.md` | COMPLETED |
 
 ## Giai đoạn hiện tại
 
-Giai đoạn vừa hoàn thành: **Giai đoạn 6 — Admin Wheel, Wheel Version và Prize Management.**
+Giai đoạn vừa hoàn thành: **Giai đoạn 7 — Prize Key Management & Wheel Version Activation.**
 
-Kết quả kiểm tra Giai đoạn 5 (Security & Git Readiness Review):
+Kết quả kiểm tra Giai đoạn 7:
 - `dotnet restore`: PASS
 - `dotnet build --no-restore`: PASS (0 error, 0 warning)
-- Unit: PASS 76/76; API integration không phụ thuộc SQL Server: PASS
-- Persistence integration: 18 test bị block bởi SQL Server local trong môi trường review; chi tiết ở `05-ADMIN-AUTHENTICATION-JWT.md`.
+- `dotnet test --no-restore`: BLOCKED một phần bởi SQL Server local; Unit 114/114 và 43 integration khả dụng PASS, 18 persistence tests bị block bởi môi trường.
+
+Security & Git Readiness Review ngày 2026-08-16: Giai đoạn 7 `READY WITH NOTES`. Crypto/storage, activation transaction và migration đã được harden; build 0 warning/error và mọi test khả dụng pass. Cần chạy lại 18 SQL Server tests trong môi trường hỗ trợ encryption, xác nhận password-like example cũ trong Git history là fixture, và dùng quy trình key-aware nếu database đã chứa PrizeKey theo schema cũ. Chi tiết tại `07-PRIZE-KEY-MANAGEMENT-AND-VERSION-ACTIVATION.md`.
 
 ## Giai đoạn tiếp theo
 
-Giai đoạn 7 — Prize Key management/activation (chưa triển khai).
+Giai đoạn 8 — Public Spin, Winner Lock & Spin Execution.
 
 ## Quy tắc cập nhật tài liệu
 

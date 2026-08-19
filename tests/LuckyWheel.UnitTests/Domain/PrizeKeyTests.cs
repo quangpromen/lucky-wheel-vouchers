@@ -4,13 +4,15 @@ public class PrizeKeyTests
 {
     private readonly Guid _prizeId = Guid.NewGuid();
     private readonly string _codeHash = "hash";
-    private readonly string _codeEncrypted = "encrypted";
+    private readonly byte[] _codeEncrypted = [1];
+    private readonly byte[] _nonce = new byte[12];
+    private readonly byte[] _tag = new byte[16];
     private readonly DateTime _now = DateTime.UtcNow;
 
     [Fact]
     public void Constructor_ValidData_CreatesAvailableKey()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
 
         Assert.Equal(PrizeKeyStatus.Available, key.Status);
         Assert.Equal(_prizeId, key.PrizeId);
@@ -19,7 +21,7 @@ public class PrizeKeyTests
     [Fact]
     public void Assign_AvailableKey_TransitionsToAssigned()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
 
@@ -34,7 +36,7 @@ public class PrizeKeyTests
     [Fact]
     public void Assign_AlreadyAssignedKey_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         key.Assign(spinId, _now, _now.AddDays(1));
 
@@ -45,7 +47,7 @@ public class PrizeKeyTests
     [Fact]
     public void Assign_ExpiresBeforeAssigned_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
 
         var ex = Assert.Throws<DomainException>(() => key.Assign(spinId, _now, _now.AddDays(-1)));
@@ -55,7 +57,7 @@ public class PrizeKeyTests
     [Fact]
     public void Redeem_AssignedKey_TransitionsToRedeemed()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -70,7 +72,7 @@ public class PrizeKeyTests
     [Fact]
     public void Redeem_AvailableKey_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var ex = Assert.Throws<DomainException>(() => key.Redeem(_now));
         Assert.Equal("PRIZE_KEY_CANNOT_BE_REDEEMED", ex.Code);
     }
@@ -78,7 +80,7 @@ public class PrizeKeyTests
     [Fact]
     public void Redeem_AfterExpiration_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -90,7 +92,7 @@ public class PrizeKeyTests
     [Fact]
     public void Expire_AssignedKey_TransitionsToExpired()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -105,7 +107,7 @@ public class PrizeKeyTests
     [Fact]
     public void Expire_BeforeExpiration_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -117,7 +119,7 @@ public class PrizeKeyTests
     [Fact]
     public void Cancel_AssignedKey_TransitionsToCancelled()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -132,7 +134,7 @@ public class PrizeKeyTests
     [Fact]
     public void Cancel_RedeemedKey_ThrowsException()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -145,7 +147,7 @@ public class PrizeKeyTests
     [Fact]
     public void Available_AfterFinalState_CannotReturnToAvailable()
     {
-        var key = new PrizeKey(_prizeId, _codeHash, _codeEncrypted, _now);
+        var key = CreateKey();
         var spinId = Guid.NewGuid();
         var expiresAt = _now.AddDays(1);
         key.Assign(spinId, _now, expiresAt);
@@ -155,4 +157,6 @@ public class PrizeKeyTests
         var ex = Assert.Throws<DomainException>(() => key.Assign(spinId, _now, expiresAt));
         Assert.Equal("PRIZE_KEY_INVALID_STATUS", ex.Code);
     }
+
+    private PrizeKey CreateKey() => new(_prizeId, _codeHash, _codeEncrypted, _nonce, _tag, _now);
 }

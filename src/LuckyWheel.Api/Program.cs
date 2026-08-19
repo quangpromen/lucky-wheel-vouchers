@@ -60,6 +60,19 @@ if (builder.Environment.IsEnvironment("Testing") && Encoding.UTF8.GetByteCount(j
         SigningKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48))
     };
 
+var prizeKeyOpt = builder.Configuration.GetSection(LuckyWheel.Infrastructure.PrizeKeys.PrizeKeyProtectionOptions.SectionName).Get<LuckyWheel.Infrastructure.PrizeKeys.PrizeKeyProtectionOptions>() ?? new LuckyWheel.Infrastructure.PrizeKeys.PrizeKeyProtectionOptions();
+if (builder.Environment.IsEnvironment("Testing") && string.IsNullOrWhiteSpace(prizeKeyOpt.EncryptionKey))
+{
+    builder.Services.Configure<LuckyWheel.Infrastructure.PrizeKeys.PrizeKeyProtectionOptions>(options =>
+    {
+        options.EncryptionKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    });
+}
+else if (!builder.Environment.IsEnvironment("Testing"))
+{
+    prizeKeyOpt.GetKeyBytesOrThrow();
+}
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {

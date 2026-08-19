@@ -1,4 +1,6 @@
 using System.Data;
+using System.Linq;
+using LuckyWheel.Application.Common.Authentication;
 using LuckyWheel.Application.Common.Exceptions;
 using LuckyWheel.Application.Common.Time;
 using LuckyWheel.Application.Common.Validation;
@@ -8,12 +10,10 @@ using LuckyWheel.Domain.Enums;
 using LuckyWheel.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Http;
-using System.Security.Claims;
 
 namespace LuckyWheel.Infrastructure.Admin;
 
-public sealed class AdminManagementService(ApplicationDbContext db, IClock clock, IHttpContextAccessor httpContextAccessor) : IAdminManagementService
+public sealed class AdminManagementService(ApplicationDbContext db, IClock clock, ICurrentAdminContext adminContext) : IAdminManagementService
 {
     public async Task<WheelDto> CreateWheelAsync(CreateWheelRequest r, CancellationToken ct)
     {
@@ -128,6 +128,82 @@ public sealed class AdminManagementService(ApplicationDbContext db, IClock clock
         return Version(entity, prizes);
     }
 
+    public async Task<WheelVersionDto> ActivateVersionAsync(Guid versionId, ActivateDraftWheelVersionRequest r, CancellationToken ct)
+    {
+        var rowVersion = AdminValidation.RowVersion(r.RowVersion);
+        var adminId = adminContext.AdminId ?? Guid.Empty;
+        if (adminId == Guid.Empty)
+            throw new BusinessRuleViolationException("WHEEL_VERSION_INVALID_PUBLISHER", "An authenticated admin identity is required to activate a version.");
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var version = await db.WheelVersions.SingleOrDefaultAsync(x => x.Id == versionId, ct)
+                ?? throw new NotFoundException("WheelVersion", versionId.ToString());
+
+            if (version.Status != WheelVersionStatus.Draft)
+                throw new ConflictException("Only Draft wheel versions can be activated.");
+
+            var segments = await db.WheelVersionPrizes.Where(x => x.WheelVersionId == versionId).OrderBy(x => x.DisplayOrder).ToListAsync(ct);
+            if (segments.Count == 0)
+                throw new BusinessRuleViolationException("WHEEL_VERSION_NO_SEGMENTS", "Wheel version must have at least one prize segment before activation.");
+            if (segments.Any(x => x.ProbabilityWeight <= 0) || segments.Sum(x => (long)x.ProbabilityWeight) != 1_000_000)
+                throw new BusinessRuleViolationException("WHEEL_VERSION_INVALID_WEIGHT", "All segment weights must be positive and total exactly 1,000,000.");
+            if (segments.Count(x => x.IsNoPrize) != 1)
+                throw new BusinessRuleViolationException("WHEEL_VERSION_INVALID_NO_PRIZE", "Wheel version must contain exactly one NoPrize segment.");
+
+            var orders = segments.Select(x => x.DisplayOrder).ToList();
+            if (orders.Distinct().Count() != segments.Count || !orders.SequenceEqual(Enumerable.Range(1, segments.Count)))
+                throw new BusinessRuleViolationException("WHEEL_VERSION_INVALID_DISPLAY_ORDER", "Segment display orders must be unique and sequential from 1 to the number of segments.");
+            if (segments.Any(x => x.IsNoPrize && x.PrizeId.HasValue))
+                throw new BusinessRuleViolationException("WVP_PRIZE_ID_MUST_BE_NULL", "PrizeId must be null for NoPrize segments.");
+            if (segments.Any(x => !x.IsNoPrize && !x.PrizeId.HasValue))
+                throw new BusinessRuleViolationException("WVP_PRIZE_ID_REQUIRED", "PrizeId is required for prize segments.");
+
+            var prizeIds = segments.Where(x => !x.IsNoPrize).Select(x => x.PrizeId!.Value).Distinct().ToList();
+            var prizes = await db.Prizes.Where(x => prizeIds.Contains(x.Id)).ToListAsync(ct);
+            if (prizes.Count != prizeIds.Count || prizes.Any(x => x.WheelId != version.WheelId || !x.IsEnabled))
+                throw new BusinessRuleViolationException("WHEEL_VERSION_INVALID_PRIZES", "Referenced prizes must exist, be enabled, and belong to the same wheel.");
+            foreach (var prize in prizes.Where(x => x.RequiresKey))
+                if (!await db.PrizeKeys.AnyAsync(x => x.PrizeId == prize.Id && x.Status == PrizeKeyStatus.Available, ct))
+                    throw new BusinessRuleViolationException("PRIZE_KEY_NOT_AVAILABLE", $"Prize '{prize.Name}' requires at least one Available prize key before version activation.");
+
+            if (await db.WheelVersions.AnyAsync(x => x.WheelId == version.WheelId && x.Status == WheelVersionStatus.Active && x.Id != versionId, ct))
+                throw new ConflictException("Another wheel version is currently active for this wheel. Close the active version before activating a new one.");
+
+            db.Entry(version).Property<byte[]>("RowVersion").OriginalValue = rowVersion;
+            version.Activate(adminId, Now);
+            Audit(AuditAction.Activated, "WheelVersion", version.Id, $"Wheel version {version.VersionNumber} activated.");
+            await SaveAsync("Wheel version was changed by another admin.", ct);
+            await tx.CommitAsync(ct);
+            return Version(version, segments);
+        });
+    }
+
+    public async Task<WheelVersionDto> CloseVersionAsync(Guid versionId, CloseActiveWheelVersionRequest r, CancellationToken ct)
+    {
+        var rowVersion = AdminValidation.RowVersion(r.RowVersion);
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+            var version = await db.WheelVersions.SingleOrDefaultAsync(x => x.Id == versionId, ct)
+                ?? throw new NotFoundException("WheelVersion", versionId.ToString());
+
+            if (version.Status != WheelVersionStatus.Active)
+                throw new ConflictException("Only Active wheel versions can be closed.");
+
+            db.Entry(version).Property<byte[]>("RowVersion").OriginalValue = rowVersion;
+            version.Close(Now);
+            Audit(AuditAction.Closed, "WheelVersion", version.Id, $"Wheel version {version.VersionNumber} closed.");
+            await SaveAsync("Wheel version was changed by another admin.", ct);
+            await tx.CommitAsync(ct);
+            var segments = await db.WheelVersionPrizes.Where(x => x.WheelVersionId == versionId).OrderBy(x => x.DisplayOrder).ToListAsync(ct);
+            return Version(version, segments);
+        });
+    }
+
     public async Task<WheelVersionPrizeDto> AddVersionPrizeAsync(Guid versionId, CreateWheelVersionPrizeRequest r, CancellationToken ct)
     {
         ValidateSegment(r.PrizeId, r.IsNoPrize, r.Weight, r.DisplayOrder, r.Color, false, null);
@@ -182,9 +258,8 @@ public sealed class AdminManagementService(ApplicationDbContext db, IClock clock
     private DateTime Now => clock.UtcNow.UtcDateTime;
     private void Audit(AuditAction action, string type, Guid id, string description)
     {
-        var value = httpContextAccessor.HttpContext?.User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)
-            ?? httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier);
-        db.AuditLogs.Add(new AuditLog(Guid.TryParse(value, out var adminId) ? adminId : null, action, type, id, description, null, Now));
+        var adminId = adminContext.AdminId;
+        db.AuditLogs.Add(new AuditLog(adminId, action, type, id, description, null, Now));
     }
     private async Task<WheelVersion> Draft(Guid id, CancellationToken ct)
     {
