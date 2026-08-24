@@ -361,8 +361,19 @@ usersecrets/
 *.p12
 *.pem
 *.key
+*.cer
+*.crt
 *.db
+*.sqlite
+*.sqlite3
 *.bak
+*.sql
+*.dump
+
+# Archives can unintentionally bundle local databases, logs, or credentials
+*.zip
+*.rar
+*.7z
 
 # Azure / cloud credentials
 *.publishsettings

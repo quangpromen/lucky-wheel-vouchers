@@ -1,3 +1,8 @@
+using System;
+using LuckyWheel.Domain.Common;
+using LuckyWheel.Domain.Entities;
+using Xunit;
+
 namespace LuckyWheel.UnitTests.Domain;
 
 public class WinnerLockTests
@@ -9,12 +14,23 @@ public class WinnerLockTests
     private readonly DateTime _now = DateTime.UtcNow;
 
     [Fact]
-    public void Constructor_ValidData_CreatesActiveLock()
+    public void Constructor_WithPrizeKey_CreatesActiveLock()
     {
         var winnerLock = new WinnerLock(_wheelId, _email, _spinId, _prizeKeyId, _now);
 
         Assert.True(winnerLock.IsActive);
         Assert.False(winnerLock.IsBlocked);
+        Assert.Equal(_prizeKeyId, winnerLock.PrizeKeyId);
+    }
+
+    [Fact]
+    public void Constructor_WithoutPrizeKey_CreatesActiveLockWithNullPrizeKeyId()
+    {
+        var winnerLock = new WinnerLock(_wheelId, _email, _spinId, null, _now);
+
+        Assert.True(winnerLock.IsActive);
+        Assert.False(winnerLock.IsBlocked);
+        Assert.Null(winnerLock.PrizeKeyId);
     }
 
     [Fact]

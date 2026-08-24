@@ -19,6 +19,9 @@ public class SpinHistoryConfiguration : IEntityTypeConfiguration<SpinHistory>
         builder.Property(x => x.WheelVersionId)
             .IsRequired();
 
+        builder.Property(x => x.WheelVersionPrizeId)
+            .IsRequired();
+
         builder.Property(x => x.EmailOriginal)
             .HasMaxLength(320)
             .IsRequired();
@@ -38,10 +41,17 @@ public class SpinHistoryConfiguration : IEntityTypeConfiguration<SpinHistory>
             .IsRequired();
 
         builder.Property(x => x.IdempotencyKey)
+            .HasMaxLength(100)
             .IsRequired();
 
         builder.Property(x => x.ReceiptToken)
             .HasMaxLength(100)
+            .IsRequired();
+
+        builder.Property(x => x.AcceptedTermsAtUtc)
+            .IsRequired();
+
+        builder.Property(x => x.CreatedAtUtc)
             .IsRequired();
 
         builder.Property(x => x.CancellationReason)
@@ -55,6 +65,11 @@ public class SpinHistoryConfiguration : IEntityTypeConfiguration<SpinHistory>
         builder.HasOne<WheelVersion>()
             .WithMany()
             .HasForeignKey(x => x.WheelVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne<WheelVersionPrize>()
+            .WithMany()
+            .HasForeignKey(x => x.WheelVersionPrizeId)
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<Prize>()
@@ -79,6 +94,7 @@ public class SpinHistoryConfiguration : IEntityTypeConfiguration<SpinHistory>
 
         builder.HasIndex(x => new { x.WheelId, x.EmailNormalized, x.CreatedAtUtc });
         builder.HasIndex(x => new { x.WheelVersionId, x.CreatedAtUtc });
+        builder.HasIndex(x => new { x.WheelVersionPrizeId, x.CreatedAtUtc });
         builder.HasIndex(x => new { x.PrizeId, x.CreatedAtUtc });
     }
 }

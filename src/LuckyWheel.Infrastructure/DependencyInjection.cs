@@ -38,6 +38,11 @@ public static class DependencyInjection
         services.AddSingleton<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyProtector, PrizeKeys.AesGcmPrizeKeyProtector>();
         services.AddScoped<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyService, PrizeKeys.PrizeKeyService>();
 
+        // ── Public Wheel & Spin Engine (Stage 8) ───────────────────────────
+        services.AddSingleton<LuckyWheel.Application.Features.Public.IRandomNumberProvider, Public.CryptoRandomNumberProvider>();
+        services.AddScoped<LuckyWheel.Application.Features.Public.IWeightedPrizeSelector, Public.WeightedPrizeSelector>();
+        services.AddScoped<LuckyWheel.Application.Features.Public.IPublicWheelService, Public.PublicWheelService>();
+
         // ── Database ───────────────────────────────────────────────────────
         var connectionString = configuration.GetConnectionString("DefaultConnection");
 

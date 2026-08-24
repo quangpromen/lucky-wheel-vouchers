@@ -281,6 +281,9 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime>("AcceptedTermsAtUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("CancellationReason")
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
@@ -304,8 +307,10 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                         .HasMaxLength(320)
                         .HasColumnType("nvarchar(320)");
 
-                    b.Property<Guid>("IdempotencyKey")
-                        .HasColumnType("uniqueidentifier");
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<Guid?>("PrizeId")
                         .HasColumnType("uniqueidentifier");
@@ -334,6 +339,9 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("WheelVersionId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid>("WheelVersionPrizeId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
 
                     b.HasIndex("IdempotencyKey")
@@ -349,6 +357,8 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                     b.HasIndex("PrizeId", "CreatedAtUtc");
 
                     b.HasIndex("WheelVersionId", "CreatedAtUtc");
+
+                    b.HasIndex("WheelVersionPrizeId", "CreatedAtUtc");
 
                     b.HasIndex("WheelId", "EmailNormalized", "CreatedAtUtc");
 
@@ -547,7 +557,7 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("LockedAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<Guid>("PrizeKeyId")
+                    b.Property<Guid?>("PrizeKeyId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<byte[]>("RowVersion")
@@ -656,6 +666,12 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                         .HasForeignKey("WheelVersionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("LuckyWheel.Domain.Entities.WheelVersionPrize", null)
+                        .WithMany()
+                        .HasForeignKey("WheelVersionPrizeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("LuckyWheel.Domain.Entities.WheelVersion", b =>
@@ -686,8 +702,7 @@ namespace LuckyWheel.Infrastructure.Persistence.Migrations
                     b.HasOne("LuckyWheel.Domain.Entities.PrizeKey", null)
                         .WithMany()
                         .HasForeignKey("PrizeKeyId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("LuckyWheel.Domain.Entities.SpinHistory", null)
                         .WithMany()

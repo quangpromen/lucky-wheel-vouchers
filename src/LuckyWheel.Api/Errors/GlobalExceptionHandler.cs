@@ -153,15 +153,15 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                  "Business rule violation",
                  exception.Message),
 
-            NotFoundException =>
+            NotFoundException notFoundEx =>
                 (StatusCodes.Status404NotFound,
-                 Application.Common.Exceptions.NotFoundException.ErrorCode,
+                 notFoundEx.Code,
                  "Resource not found",
                  exception.Message),
 
-            ConflictException =>
+            ConflictException conflictEx =>
                 (StatusCodes.Status409Conflict,
-                 Application.Common.Exceptions.ConflictException.ErrorCode,
+                 conflictEx.Code,
                  "Conflict",
                  exception.Message),
 

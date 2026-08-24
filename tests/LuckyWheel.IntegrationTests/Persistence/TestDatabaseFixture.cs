@@ -45,7 +45,15 @@ public class TestDatabaseFixture : IDisposable
             if (!_databaseInitialized)
             {
                 using var context = CreateContext();
-                context.Database.Migrate();
+                try
+                {
+                    context.Database.Migrate();
+                }
+                catch (SqlException ex) when (ex.Message.Contains("PrizeKey encryption storage migration requires an empty PrizeKeys table"))
+                {
+                    context.Database.EnsureDeleted();
+                    context.Database.Migrate();
+                }
                 _databaseInitialized = true;
             }
         }

@@ -8,7 +8,7 @@ public class WinnerLock : Entity
     public Guid WheelId { get; private set; }
     public string EmailNormalized { get; private set; }
     public Guid SpinId { get; private set; }
-    public Guid PrizeKeyId { get; private set; }
+    public Guid? PrizeKeyId { get; private set; }
     public bool IsActive { get; private set; }
     public bool IsBlocked { get; private set; }
     public DateTime LockedAtUtc { get; private set; }
@@ -20,7 +20,7 @@ public class WinnerLock : Entity
         Guid wheelId,
         string emailNormalized,
         Guid spinId,
-        Guid prizeKeyId,
+        Guid? prizeKeyId,
         DateTime lockedAtUtc)
     {
         if (wheelId == Guid.Empty)
@@ -29,8 +29,8 @@ public class WinnerLock : Entity
             throw new DomainException("LOCK_EMAIL_REQUIRED", "EmailNormalized is required.");
         if (spinId == Guid.Empty)
             throw new DomainException("LOCK_INVALID_SPIN_ID", "SpinId cannot be empty.");
-        if (prizeKeyId == Guid.Empty)
-            throw new DomainException("LOCK_INVALID_PRIZE_KEY_ID", "PrizeKeyId cannot be empty.");
+        if (prizeKeyId.HasValue && prizeKeyId.Value == Guid.Empty)
+            throw new DomainException("LOCK_INVALID_PRIZE_KEY_ID", "PrizeKeyId cannot be empty when specified.");
 
         WheelId = wheelId;
         EmailNormalized = emailNormalized;
@@ -66,6 +66,5 @@ public class WinnerLock : Entity
         IsActive = true;
         IsBlocked = true;
         BlockReason = reason;
-        // Keep LockedAtUtc or we could update a timestamp if needed, but per requirements we just set IsBlocked
     }
 }

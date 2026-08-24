@@ -23,7 +23,7 @@ public class WinnerLockConfiguration : IEntityTypeConfiguration<WinnerLock>
             .IsRequired();
 
         builder.Property(x => x.PrizeKeyId)
-            .IsRequired();
+            .IsRequired(false);
 
         builder.Property(x => x.IsActive)
             .IsRequired();
@@ -52,6 +52,7 @@ public class WinnerLockConfiguration : IEntityTypeConfiguration<WinnerLock>
         builder.HasOne<PrizeKey>()
             .WithMany()
             .HasForeignKey(x => x.PrizeKeyId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasIndex(x => new { x.WheelId, x.EmailNormalized })

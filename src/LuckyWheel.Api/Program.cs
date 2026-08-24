@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.Security.Cryptography;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -134,6 +136,48 @@ builder.Services.AddSwaggerGen(options =>
     options.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, "LuckyWheel.Api.xml"));
 });
 
+// ── Rate Limiting ─────────────────────────────────────────────────────────────
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, token) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/problem+json";
+        var traceId = context.HttpContext.Items.TryGetValue(CorrelationIdMiddleware.CorrelationIdItemKey, out var item)
+            && item is string cid && !string.IsNullOrWhiteSpace(cid)
+            ? cid
+            : context.HttpContext.TraceIdentifier;
+
+        context.HttpContext.Response.Headers[CorrelationIdMiddleware.CorrelationIdHeader] = traceId;
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            type = "https://httpstatuses.com/429",
+            title = "Too Many Requests",
+            status = StatusCodes.Status429TooManyRequests,
+            detail = "Rate limit exceeded. Please try again later.",
+            instance = context.HttpContext.Request.Path.Value,
+            traceId = traceId,
+            errorCode = "TOO_MANY_REQUESTS"
+        }, cancellationToken: token);
+    };
+
+    options.AddPolicy("PublicSpinRateLimit", httpContext =>
+    {
+        // Note: When deployed behind a reverse proxy/CDN, forward headers (e.g. X-Forwarded-For)
+        // must be properly processed with UseForwardedHeaders() and trusted proxies.
+        var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown_ip";
+        return RateLimitPartition.GetFixedWindowLimiter(ip, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit = 0
+        });
+    });
+});
+
 // ── Health Checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<ApplicationDbContext>();
@@ -166,10 +210,13 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
-// 6. Controllers
+// 6. Rate Limiter
+app.UseRateLimiter();
+
+// 7. Controllers
 app.MapControllers();
 
-// 7. Health check
+// 8. Health check
 app.MapHealthChecks("/health");
 
 if (app.Environment.IsDevelopment())
