@@ -1090,6 +1090,275 @@ public sealed class PublicSpinConcurrencySqlTests(TestDatabaseFixture fixture)
         Assert.Equal(1, await verify.PrizeKeys.CountAsync(x => x.PrizeId == raceSeed.PrizeA.Id && x.Status == PrizeKeyStatus.Assigned));
     }
 
+    [Fact]
+    public async Task PublicWheel_GetActiveWheelBySlugAsync_ReturnsTermsAndActiveVersionWindow()
+    {
+        var startAtUtc = _now.AddDays(-2);
+        var endAtUtc = _now.AddDays(5);
+        const string expectedTerms = "Điều khoản chính thức trên SQL Server.";
+        var seed = await SeedWheelAsync(
+            availableKeyCount: 1,
+            prizeWeight: 900_000,
+            noPrizeWeight: 100_000,
+            startAtUtc: startAtUtc,
+            endAtUtc: endAtUtc,
+            terms: expectedTerms);
+
+        await using var sp = BuildTestServiceProvider(drawValue: 0);
+        await using var scope = sp.CreateAsyncScope();
+        var publicService = scope.ServiceProvider.GetRequiredService<IPublicWheelService>();
+
+        var dto = await publicService.GetActiveWheelBySlugAsync(seed.Slug);
+
+        Assert.Equal(seed.Wheel.Id, dto.WheelId);
+        Assert.Equal(seed.Slug, dto.Slug);
+        Assert.Equal(expectedTerms, dto.Terms);
+        Assert.Equal(seed.Version.Id, dto.VersionId);
+        Assert.Equal(1, dto.VersionNumber);
+        Assert.Equal(startAtUtc, dto.StartAtUtc);
+        Assert.Equal(endAtUtc, dto.EndAtUtc);
+        Assert.Equal(2, dto.Entries.Count);
+    }
+
+    [Fact]
+    public async Task PrizeSnapshot_WinThenAdminUpdatesPrize_ReplayAndAdminHistoryPreserveOriginalSnapshotWhileNewWinUsesUpdatedPrize()
+    {
+        var adminId = await SeedAdminAsync();
+        var seed = await SeedWheelAsync(
+            availableKeyCount: 2,
+            prizeWeight: 900_000,
+            noPrizeWeight: 100_000,
+            prizeName: "Voucher 500k",
+            prizeDescription: "Áp dụng đơn 2 triệu");
+
+        await using var sp = BuildTestServiceProvider(drawValue: 0, adminId: adminId);
+
+        var firstIdempKey = $"sql-snap-win1-{Guid.NewGuid():N}";
+        var firstWin = await RunSpinInScopeAsync(sp, seed.Slug, firstIdempKey, new SpinRequest("winner.one@gmail.com", true));
+
+        Assert.Equal("Win", firstWin.Result);
+        Assert.NotNull(firstWin.Prize);
+        Assert.Equal("Voucher 500k", firstWin.Prize!.Name);
+        Assert.Equal("Áp dụng đơn 2 triệu", firstWin.Prize.Description);
+        Assert.NotNull(firstWin.Prize.Key);
+
+        // Admin updates prize via real AdminManagementService
+        string prizeRowVersion;
+        await using (var rvDb = fixture.CreateContext())
+        {
+            var p = await rvDb.Prizes.SingleAsync(x => x.Id == seed.PrizeA.Id);
+            prizeRowVersion = Convert.ToBase64String(rvDb.Entry(p).Property<byte[]>("RowVersion").CurrentValue!);
+        }
+
+        await using (var adminScope = sp.CreateAsyncScope())
+        {
+            var adminService = adminScope.ServiceProvider.GetRequiredService<IAdminManagementService>();
+            await adminService.UpdatePrizeAsync(
+                seed.PrizeA.Id,
+                new UpdatePrizeRequest("Voucher 300k", "Áp dụng đơn 1 triệu", null, true, seed.PrizeA.TotalQuantity, prizeRowVersion),
+                default);
+        }
+
+        // Replay of first spin preserves original snapshot, key, and expiry
+        var replayFirst = await RunSpinInScopeAsync(sp, seed.Slug, firstIdempKey, new SpinRequest("winnerone+retry@gmail.com", true));
+        Assert.Equal(firstWin.SpinId, replayFirst.SpinId);
+        Assert.Equal(firstWin.ReceiptToken, replayFirst.ReceiptToken);
+        Assert.NotNull(replayFirst.Prize);
+        Assert.Equal(seed.PrizeA.Id, replayFirst.Prize!.Id);
+        Assert.Equal("Voucher 500k", replayFirst.Prize.Name);
+        Assert.Equal("Áp dụng đơn 2 triệu", replayFirst.Prize.Description);
+        Assert.Equal(firstWin.Prize.Key, replayFirst.Prize.Key);
+        Assert.Equal(firstWin.Prize.KeyExpiresAtUtc, replayFirst.Prize.KeyExpiresAtUtc);
+
+        // New spin by a different Gmail gets updated prize information
+        var secondWin = await RunSpinInScopeAsync(sp, seed.Slug, $"sql-snap-win2-{Guid.NewGuid():N}", new SpinRequest("winner.two@gmail.com", true));
+        Assert.Equal("Win", secondWin.Result);
+        Assert.NotNull(secondWin.Prize);
+        Assert.Equal("Voucher 300k", secondWin.Prize!.Name);
+        Assert.Equal("Áp dụng đơn 1 triệu", secondWin.Prize.Description);
+        Assert.NotEqual(firstWin.Prize.Key, secondWin.Prize.Key);
+
+        // Verify persisted snapshots in SQL Server
+        await using (var verify = fixture.CreateContext())
+        {
+            var spin1Db = await verify.SpinHistories.AsNoTracking().SingleAsync(x => x.Id == firstWin.SpinId);
+            Assert.Equal("Voucher 500k", spin1Db.PrizeNameSnapshot);
+            Assert.Equal("Áp dụng đơn 2 triệu", spin1Db.PrizeDescriptionSnapshot);
+
+            var spin2Db = await verify.SpinHistories.AsNoTracking().SingleAsync(x => x.Id == secondWin.SpinId);
+            Assert.Equal("Voucher 300k", spin2Db.PrizeNameSnapshot);
+            Assert.Equal("Áp dụng đơn 1 triệu", spin2Db.PrizeDescriptionSnapshot);
+        }
+
+        // Verify Admin history via real PrizeKeyService.GetWheelSpinsAsync
+        await using (var historyScope = sp.CreateAsyncScope())
+        {
+            var prizeKeyService = historyScope.ServiceProvider.GetRequiredService<IPrizeKeyService>();
+            var page = await prizeKeyService.GetWheelSpinsAsync(seed.Wheel.Id, new AdminSpinHistoryFilter(1, 20));
+            Assert.Equal(2, page.TotalCount);
+
+            var firstItem = Assert.Single(page.Items, x => x.Id == firstWin.SpinId);
+            var secondItem = Assert.Single(page.Items, x => x.Id == secondWin.SpinId);
+            Assert.Equal("Voucher 500k", firstItem.PrizeName);
+            Assert.Equal("Voucher 300k", secondItem.PrizeName);
+        }
+    }
+
+    [Fact]
+    public async Task PrizeSnapshot_NullDescriptionAtWin_RemainsNullOnReplayAfterAdminAddsDescription()
+    {
+        var adminId = await SeedAdminAsync();
+        var seed = await SeedWheelAsync(
+            availableKeyCount: 1,
+            prizeWeight: 900_000,
+            noPrizeWeight: 100_000,
+            prizeName: "Quà không mô tả",
+            prizeDescription: null);
+
+        await using var sp = BuildTestServiceProvider(drawValue: 0, adminId: adminId);
+
+        var idempKey = $"sql-snap-nulldesc-{Guid.NewGuid():N}";
+        var win = await RunSpinInScopeAsync(sp, seed.Slug, idempKey, new SpinRequest("nulldesc@gmail.com", true));
+        Assert.Equal("Win", win.Result);
+        Assert.Equal("Quà không mô tả", win.Prize!.Name);
+        Assert.Null(win.Prize.Description);
+
+        string prizeRowVersion;
+        await using (var rvDb = fixture.CreateContext())
+        {
+            var p = await rvDb.Prizes.SingleAsync(x => x.Id == seed.PrizeA.Id);
+            prizeRowVersion = Convert.ToBase64String(rvDb.Entry(p).Property<byte[]>("RowVersion").CurrentValue!);
+        }
+
+        await using (var adminScope = sp.CreateAsyncScope())
+        {
+            var adminService = adminScope.ServiceProvider.GetRequiredService<IAdminManagementService>();
+            await adminService.UpdatePrizeAsync(
+                seed.PrizeA.Id,
+                new UpdatePrizeRequest("Quà tên mới", "Mô tả mới thêm sau", null, true, seed.PrizeA.TotalQuantity, prizeRowVersion),
+                default);
+        }
+
+        var replay = await RunSpinInScopeAsync(sp, seed.Slug, idempKey, new SpinRequest("nulldesc@gmail.com", true));
+        Assert.Equal(win.SpinId, replay.SpinId);
+        Assert.Equal("Quà không mô tả", replay.Prize!.Name);
+        Assert.Null(replay.Prize.Description);
+        Assert.Equal(win.Prize.Key, replay.Prize.Key);
+
+        await using var verify = fixture.CreateContext();
+        var dbSpin = await verify.SpinHistories.AsNoTracking().SingleAsync(x => x.Id == win.SpinId);
+        Assert.Equal("Quà không mô tả", dbSpin.PrizeNameSnapshot);
+        Assert.Null(dbSpin.PrizeDescriptionSnapshot);
+    }
+
+    [Fact]
+    public async Task PrizeSnapshot_DirectAndFallbackNoPrize_StoreNullSnapshotInDatabaseAndAdminHistory()
+    {
+        var seed = await SeedWheelWithTwoPrizesAsync(prizeAKeys: 0, prizeBKeys: 1);
+
+        await using var spFallback = BuildTestServiceProvider(drawValue: 0);
+        await using var spDirect = BuildTestServiceProvider(drawValue: 950_000);
+
+        var fallbackRes = await RunSpinInScopeAsync(spFallback, seed.Slug, $"sql-np-fb-{Guid.NewGuid():N}", new SpinRequest("fallback.np@gmail.com", true));
+        var directRes = await RunSpinInScopeAsync(spDirect, seed.Slug, $"sql-np-dir-{Guid.NewGuid():N}", new SpinRequest("direct.np@gmail.com", true));
+
+        Assert.Equal("NoPrize", fallbackRes.Result);
+        Assert.Null(fallbackRes.Prize);
+        Assert.Equal("NoPrize", directRes.Result);
+        Assert.Null(directRes.Prize);
+
+        await using (var verify = fixture.CreateContext())
+        {
+            var spins = await verify.SpinHistories.AsNoTracking().Where(x => x.WheelId == seed.Wheel.Id).ToListAsync();
+            Assert.Equal(2, spins.Count);
+            Assert.All(spins, s =>
+            {
+                Assert.Equal(SpinResult.NoPrize, s.Result);
+                Assert.Null(s.PrizeNameSnapshot);
+                Assert.Null(s.PrizeDescriptionSnapshot);
+            });
+        }
+
+        await using (var scope = spDirect.CreateAsyncScope())
+        {
+            var prizeKeyService = scope.ServiceProvider.GetRequiredService<IPrizeKeyService>();
+            var page = await prizeKeyService.GetWheelSpinsAsync(seed.Wheel.Id, new AdminSpinHistoryFilter(1, 20));
+            Assert.Equal(2, page.TotalCount);
+            Assert.All(page.Items, item => Assert.Null(item.PrizeName));
+        }
+    }
+
+    [Fact]
+    public async Task LegacyWinWithoutSnapshot_RawSqlNullColumns_ReplayAndAdminHistoryUseNeutralFallbackWithoutReadingCurrentPrize()
+    {
+        var seed = await SeedWheelAsync(
+            availableKeyCount: 0,
+            prizeWeight: 900_000,
+            noPrizeWeight: 100_000,
+            prizeName: "Tên giải đã chỉnh sửa hiện tại",
+            prizeDescription: "Mô tả đã chỉnh sửa hiện tại");
+
+        var legacySpinId = Guid.NewGuid();
+        var legacyIdempKey = $"sql-legacy-win-{Guid.NewGuid():N}";
+        var legacyReceipt = $"RC-LEGACY-{Guid.NewGuid():N}"[..35];
+        var expectedPlaintextKey = $"LW-LEG-{Guid.NewGuid():N}"[..20].ToUpperInvariant();
+        var assignedAtUtc = _now.AddHours(-3);
+        var expiresAtUtc = _now.AddHours(-2);
+
+        Guid prizeSegId;
+        await using (var setupDb = fixture.CreateContext())
+        {
+            prizeSegId = await setupDb.WheelVersionPrizes
+                .Where(x => x.WheelVersionId == seed.Version.Id && !x.IsNoPrize)
+                .Select(x => x.Id)
+                .SingleAsync();
+
+            var pk = _protector.Protect(expectedPlaintextKey);
+            var key = new PrizeKey(seed.PrizeA.Id, pk.CodeHash, pk.EncryptedCode, pk.EncryptionNonce, pk.EncryptionTag, assignedAtUtc.AddMinutes(-10));
+            setupDb.PrizeKeys.Add(key);
+            await setupDb.SaveChangesAsync();
+
+            // Insert a pre-migration legacy Win row directly via SQL with NULL snapshot columns
+            await setupDb.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [SpinHistories]
+                    ([Id], [WheelId], [WheelVersionId], [WheelVersionPrizeId],
+                     [EmailOriginal], [EmailNormalized], [Result], [Status],
+                     [PrizeId], [PrizeNameSnapshot], [PrizeDescriptionSnapshot], [PrizeKeyId],
+                     [IdempotencyKey], [ReceiptToken], [AcceptedTermsAtUtc], [CreatedAtUtc])
+                VALUES
+                    ({legacySpinId}, {seed.Wheel.Id}, {seed.Version.Id}, {prizeSegId},
+                     {"Legacy.User@gmail.com"}, {"legacyuser@gmail.com"}, {"Win"}, {"Completed"},
+                     {seed.PrizeA.Id}, NULL, NULL, {key.Id},
+                     {legacyIdempKey}, {legacyReceipt}, {assignedAtUtc}, {assignedAtUtc})
+                """);
+
+            key.Assign(legacySpinId, assignedAtUtc, expiresAtUtc);
+            await setupDb.SaveChangesAsync();
+        }
+
+        await using var sp = BuildTestServiceProvider(drawValue: 0);
+
+        // Replay must use fixed neutral fallback ("Phần thưởng", null) — never current Prize table values
+        var replay = await RunSpinInScopeAsync(sp, seed.Slug, legacyIdempKey, new SpinRequest("legacyuser@gmail.com", true));
+        Assert.Equal(legacySpinId, replay.SpinId);
+        Assert.Equal(legacyReceipt, replay.ReceiptToken);
+        Assert.Equal("Win", replay.Result);
+        Assert.NotNull(replay.Prize);
+        Assert.Equal(seed.PrizeA.Id, replay.Prize!.Id);
+        Assert.Equal(SpinHistory.LegacyMissingPrizeNameFallback, replay.Prize.Name);
+        Assert.Null(replay.Prize.Description);
+        Assert.Equal(expectedPlaintextKey, replay.Prize.Key);
+        Assert.Equal(expiresAtUtc, replay.Prize.KeyExpiresAtUtc);
+
+        // Admin history must also use fixed neutral fallback
+        await using var scope = sp.CreateAsyncScope();
+        var prizeKeyService = scope.ServiceProvider.GetRequiredService<IPrizeKeyService>();
+        var page = await prizeKeyService.GetWheelSpinsAsync(seed.Wheel.Id, new AdminSpinHistoryFilter(1, 20));
+        var item = Assert.Single(page.Items);
+        Assert.Equal(legacySpinId, item.Id);
+        Assert.Equal(SpinHistory.LegacyMissingPrizeNameFallback, item.PrizeName);
+    }
+
     // ── Seed & Scope Helpers ──────────────────────────────────────────────────────────────
 
     private static IPrizeKeyProtector CreateProtector()
@@ -1141,8 +1410,10 @@ public sealed class PublicSpinConcurrencySqlTests(TestDatabaseFixture fixture)
             }
         });
 
+        services.AddSingleton<IPrizeKeyGenerator, CryptoPrizeKeyGenerator>();
         services.AddScoped<IPublicWheelService, PublicWheelService>();
         services.AddScoped<IAdminManagementService, AdminManagementService>();
+        services.AddScoped<IPrizeKeyService, PrizeKeyService>();
 
         return services.BuildServiceProvider();
     }
@@ -1267,11 +1538,14 @@ public sealed class PublicSpinConcurrencySqlTests(TestDatabaseFixture fixture)
         bool singleNoPrizeOnly = false,
         DateTime? startAtUtc = null,
         DateTime? endAtUtc = null,
-        int claimDurationMinutes = 60)
+        int claimDurationMinutes = 60,
+        string prizeName = "Prize A",
+        string? prizeDescription = "Voucher",
+        string terms = "Terms")
     {
         await using var db = fixture.CreateContext();
         var slug = $"sql-wheel-{Guid.NewGuid():N}";
-        var wheel = new Wheel($"Wheel {slug}", slug, "Desc", "Terms", _now);
+        var wheel = new Wheel($"Wheel {slug}", slug, "Desc", terms, _now);
         db.Wheels.Add(wheel);
 
         var version = new WheelVersion(
@@ -1284,7 +1558,7 @@ public sealed class PublicSpinConcurrencySqlTests(TestDatabaseFixture fixture)
         version.Activate(Guid.NewGuid(), _now);
         db.WheelVersions.Add(version);
 
-        var prizeA = new Prize(wheel.Id, "Prize A", "Voucher", null, true, Math.Max(availableKeyCount, 1), _now);
+        var prizeA = new Prize(wheel.Id, prizeName, prizeDescription, null, true, Math.Max(availableKeyCount, 1), _now);
         db.Prizes.Add(prizeA);
 
         for (var i = 0; i < availableKeyCount; i++)

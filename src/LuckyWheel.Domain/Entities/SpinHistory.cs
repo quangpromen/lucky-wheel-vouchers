@@ -6,6 +6,8 @@ namespace LuckyWheel.Domain.Entities;
 
 public class SpinHistory : Entity
 {
+    public const string LegacyMissingPrizeNameFallback = "Phần thưởng";
+
     public Guid WheelId { get; private set; }
     public Guid WheelVersionId { get; private set; }
     public Guid WheelVersionPrizeId { get; private set; }
@@ -14,6 +16,8 @@ public class SpinHistory : Entity
     public SpinResult Result { get; private set; }
     public SpinStatus Status { get; private set; }
     public Guid? PrizeId { get; private set; }
+    public string? PrizeNameSnapshot { get; private set; }
+    public string? PrizeDescriptionSnapshot { get; private set; }
     public Guid? PrizeKeyId { get; private set; }
     public string IdempotencyKey { get; private set; }
     public string ReceiptToken { get; private set; }
@@ -31,6 +35,8 @@ public class SpinHistory : Entity
         string emailNormalized,
         SpinResult result,
         Guid? prizeId,
+        string? prizeNameSnapshot,
+        string? prizeDescriptionSnapshot,
         Guid? prizeKeyId,
         string idempotencyKey,
         string receiptToken,
@@ -60,6 +66,8 @@ public class SpinHistory : Entity
         Result = result;
         Status = SpinStatus.Completed;
         PrizeId = prizeId;
+        PrizeNameSnapshot = prizeNameSnapshot;
+        PrizeDescriptionSnapshot = prizeDescriptionSnapshot;
         PrizeKeyId = prizeKeyId;
         IdempotencyKey = idempotencyKey;
         ReceiptToken = receiptToken;
@@ -87,6 +95,8 @@ public class SpinHistory : Entity
             SpinResult.NoPrize,
             null,
             null,
+            null,
+            null,
             idempotencyKey,
             receiptToken,
             acceptedTermsAtUtc,
@@ -100,6 +110,8 @@ public class SpinHistory : Entity
         string emailOriginal,
         string emailNormalized,
         Guid prizeId,
+        string prizeNameSnapshot,
+        string? prizeDescriptionSnapshot,
         Guid? prizeKeyId,
         string idempotencyKey,
         string receiptToken,
@@ -108,6 +120,17 @@ public class SpinHistory : Entity
     {
         if (prizeId == Guid.Empty)
             throw new DomainException("SPIN_WIN_REQUIRES_PRIZE_ID", "PrizeId is required for Win result.");
+        if (string.IsNullOrWhiteSpace(prizeNameSnapshot))
+            throw new DomainException("SPIN_WIN_REQUIRES_PRIZE_NAME_SNAPSHOT", "PrizeNameSnapshot is required for Win result.");
+
+        var trimmedPrizeName = prizeNameSnapshot.Trim();
+        if (trimmedPrizeName.Length > 200)
+            throw new DomainException("SPIN_WIN_PRIZE_NAME_SNAPSHOT_TOO_LONG", "PrizeNameSnapshot cannot exceed 200 characters.");
+
+        var trimmedPrizeDescription = prizeDescriptionSnapshot?.Trim();
+        if (trimmedPrizeDescription is { Length: > 1000 })
+            throw new DomainException("SPIN_WIN_PRIZE_DESCRIPTION_SNAPSHOT_TOO_LONG", "PrizeDescriptionSnapshot cannot exceed 1000 characters.");
+
         if (prizeKeyId.HasValue && prizeKeyId.Value == Guid.Empty)
             throw new DomainException("SPIN_WIN_REQUIRES_PRIZE_KEY_ID", "PrizeKeyId cannot be empty when provided.");
 
@@ -119,6 +142,8 @@ public class SpinHistory : Entity
             emailNormalized,
             SpinResult.Win,
             prizeId,
+            trimmedPrizeName,
+            trimmedPrizeDescription,
             prizeKeyId,
             idempotencyKey,
             receiptToken,

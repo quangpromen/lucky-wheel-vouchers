@@ -157,8 +157,8 @@ public class DatabaseConstraintTests
         await context.SaveChangesAsync();
 
         var email = "user@example.com";
-        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg1.Id, email, email, prize.Id, key1.Id, Guid.NewGuid().ToString(), $"rcpt1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
-        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg2.Id, email, email, prize.Id, key2.Id, Guid.NewGuid().ToString(), $"rcpt2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg1.Id, email, email, prize.Id, prize.Name, prize.Description, key1.Id, Guid.NewGuid().ToString(), $"rcpt1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg2.Id, email, email, prize.Id, prize.Name, prize.Description, key2.Id, Guid.NewGuid().ToString(), $"rcpt2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         context.SpinHistories.AddRange(spin1, spin2);
         await context.SaveChangesAsync();
 
@@ -199,8 +199,8 @@ public class DatabaseConstraintTests
         await context.SaveChangesAsync();
 
         var email = "user2@example.com";
-        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg1.Id, email, email, prize.Id, key1.Id, Guid.NewGuid().ToString(), $"rcpt-in1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
-        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg2.Id, email, email, prize.Id, key2.Id, Guid.NewGuid().ToString(), $"rcpt-in2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg1.Id, email, email, prize.Id, prize.Name, prize.Description, key1.Id, Guid.NewGuid().ToString(), $"rcpt-in1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg2.Id, email, email, prize.Id, prize.Name, prize.Description, key2.Id, Guid.NewGuid().ToString(), $"rcpt-in2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         context.SpinHistories.AddRange(spin1, spin2);
         await context.SaveChangesAsync();
 
@@ -242,11 +242,11 @@ public class DatabaseConstraintTests
         context.PrizeKeys.Add(key);
         await context.SaveChangesAsync();
 
-        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "a@ex.com", "a@ex.com", prize.Id, key.Id, Guid.NewGuid().ToString(), $"rcpt-k1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "a@ex.com", "a@ex.com", prize.Id, prize.Name, prize.Description, key.Id, Guid.NewGuid().ToString(), $"rcpt-k1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         context.SpinHistories.Add(spin1);
         await context.SaveChangesAsync();
 
-        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "b@ex.com", "b@ex.com", prize.Id, key.Id, Guid.NewGuid().ToString(), $"rcpt-k2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin2 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "b@ex.com", "b@ex.com", prize.Id, prize.Name, prize.Description, key.Id, Guid.NewGuid().ToString(), $"rcpt-k2-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         context.SpinHistories.Add(spin2);
 
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
@@ -276,12 +276,12 @@ public class DatabaseConstraintTests
         context.PrizeKeys.Add(key);
         await context.SaveChangesAsync();
 
-        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "a@ex.com", "a@ex.com", prize.Id, key.Id, Guid.NewGuid().ToString(), $"rcpt-r1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin1 = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "a@ex.com", "a@ex.com", prize.Id, prize.Name, prize.Description, key.Id, Guid.NewGuid().ToString(), $"rcpt-r1-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         var key2 = TestPrizeKey(prize.Id, $"hash-redem2-{Guid.NewGuid():N}");
         context.PrizeKeys.Add(key2);
         await context.SaveChangesAsync();
 
-        var spin2Clean = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "b@ex.com", "b@ex.com", prize.Id, key2.Id, Guid.NewGuid().ToString(), $"rcpt-r2clean-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
+        var spin2Clean = SpinHistory.CreateWin(wheel.Id, version.Id, seg.Id, "b@ex.com", "b@ex.com", prize.Id, prize.Name, prize.Description, key2.Id, Guid.NewGuid().ToString(), $"rcpt-r2clean-{Guid.NewGuid():N}", DateTime.UtcNow, DateTime.UtcNow);
         context.SpinHistories.AddRange(spin1, spin2Clean);
         await context.SaveChangesAsync();
 

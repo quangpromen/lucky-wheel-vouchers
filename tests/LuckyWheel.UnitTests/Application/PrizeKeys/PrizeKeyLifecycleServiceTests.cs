@@ -75,6 +75,8 @@ public sealed class PrizeKeyLifecycleServiceTests
             "nguyenvanquang@gmail.com",
             "nguyenvanquang@gmail.com",
             prize.Id,
+            prize.Name,
+            prize.Description,
             prizeKey.Id,
             "idemp-12345",
             "RC-TOKEN-12345",
@@ -345,6 +347,67 @@ public sealed class PrizeKeyLifecycleServiceTests
 
         Assert.Equal(0, result.TotalCount);
         Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetWheelSpinsAsync_AfterPrizeRenamed_ReturnsOriginalPrizeNameSnapshot()
+    {
+        var (wheel, _, prize, spin, _) = await SeedAssignedKeyAsync();
+
+        // Admin renames the prize after the spin already occurred
+        prize.Update("Voucher 300k Đã Đổi", "Mô tả mới", null, true, 10, _clock.UtcNow.UtcDateTime.AddMinutes(10));
+        await _db.SaveChangesAsync();
+
+        var result = await _service.GetWheelSpinsAsync(wheel.Id, new AdminSpinHistoryFilter(PageNumber: 1, PageSize: 20));
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(spin.Id, item.Id);
+        Assert.Equal(prize.Id, item.PrizeId);
+        Assert.Equal("Voucher 500k", item.PrizeName);
+    }
+
+    [Fact]
+    public async Task GetWheelSpinsAsync_LegacyWinWithoutSnapshot_ReturnsNeutralFallbackWithoutUsingCurrentPrizeName()
+    {
+        var (wheel, _, prize, spin, _) = await SeedAssignedKeyAsync();
+
+        // Simulate legacy Win row created before snapshot columns existed
+        _db.Entry(spin).Property(x => x.PrizeNameSnapshot).CurrentValue = null;
+        _db.Entry(spin).Property(x => x.PrizeDescriptionSnapshot).CurrentValue = null;
+        prize.Update("Voucher 999k Hiện Tại", "Mô tả hiện tại", null, true, 10, _clock.UtcNow.UtcDateTime.AddMinutes(10));
+        await _db.SaveChangesAsync();
+
+        var result = await _service.GetWheelSpinsAsync(wheel.Id, new AdminSpinHistoryFilter(PageNumber: 1, PageSize: 20));
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(spin.Id, item.Id);
+        Assert.Equal(SpinHistory.LegacyMissingPrizeNameFallback, item.PrizeName);
+    }
+
+    [Fact]
+    public async Task GetWheelSpinsAsync_NoPrizeSpin_ReturnsNullPrizeName()
+    {
+        var (wheel, version, _, _, _) = await SeedAssignedKeyAsync();
+        var now = _clock.UtcNow.UtcDateTime.AddMinutes(5);
+        var noPrizeSpin = SpinHistory.CreateNoPrize(
+            wheel.Id,
+            version.Id,
+            Guid.NewGuid(),
+            "other@gmail.com",
+            "other@gmail.com",
+            "idemp-noprize-hist",
+            "RC-TOKEN-NP",
+            now,
+            now);
+        _db.SpinHistories.Add(noPrizeSpin);
+        await _db.SaveChangesAsync();
+
+        var result = await _service.GetWheelSpinsAsync(wheel.Id, new AdminSpinHistoryFilter(PageNumber: 1, PageSize: 20, Result: SpinResult.NoPrize));
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(noPrizeSpin.Id, item.Id);
+        Assert.Null(item.PrizeId);
+        Assert.Null(item.PrizeName);
     }
 
     // ── 5. Expiration Processor Tests ──────────────────────────────────────────

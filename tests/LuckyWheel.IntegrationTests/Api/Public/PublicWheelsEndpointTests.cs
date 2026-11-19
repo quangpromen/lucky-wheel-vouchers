@@ -21,6 +21,10 @@ public sealed class PublicWheelTestFactory : WebApplicationFactory<Program>
 {
     public sealed class TestPublicWheelService : IPublicWheelService
     {
+        public static readonly DateTime SampleStartAtUtc = new(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        public static readonly DateTime SampleEndAtUtc = new(2026, 8, 31, 23, 59, 59, DateTimeKind.Utc);
+        public const string SampleTerms = "Áp dụng cho khách hàng dùng Gmail hợp lệ.";
+
         public Task<PublicWheelDto> GetActiveWheelBySlugAsync(string slug, CancellationToken ct = default)
         {
             if (slug == "active-wheel")
@@ -30,7 +34,16 @@ public sealed class PublicWheelTestFactory : WebApplicationFactory<Program>
                     new(Guid.NewGuid(), 1, "Voucher 10%", "#FFAA00", null, false),
                     new(Guid.NewGuid(), 2, "Chúc bạn may mắn lần sau", "#CCCCCC", null, true)
                 };
-                return Task.FromResult(new PublicWheelDto(Guid.NewGuid(), "Active Wheel", "active-wheel", Guid.NewGuid(), 1, entries));
+                return Task.FromResult(new PublicWheelDto(
+                    Guid.NewGuid(),
+                    "Active Wheel",
+                    "active-wheel",
+                    SampleTerms,
+                    Guid.NewGuid(),
+                    1,
+                    SampleStartAtUtc,
+                    SampleEndAtUtc,
+                    entries));
             }
 
             throw NotFoundException.WithCode("WHEEL_NOT_AVAILABLE", "Wheel is not available.");
@@ -88,15 +101,26 @@ public sealed class PublicWheelsEndpointTests(PublicWheelTestFactory factory) : 
 
         Assert.Equal("Active Wheel", doc.GetProperty("name").GetString());
         Assert.Equal("active-wheel", doc.GetProperty("slug").GetString());
+        Assert.Equal(PublicWheelTestFactory.TestPublicWheelService.SampleTerms, doc.GetProperty("terms").GetString());
         Assert.Equal(1, doc.GetProperty("versionNumber").GetInt32());
+        Assert.Equal(PublicWheelTestFactory.TestPublicWheelService.SampleStartAtUtc, doc.GetProperty("startAtUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal(PublicWheelTestFactory.TestPublicWheelService.SampleEndAtUtc, doc.GetProperty("endAtUtc").GetDateTime().ToUniversalTime());
+
+        // Ensure admin/internal fields are not exposed on the root wheel payload
+        Assert.False(doc.TryGetProperty("totalQuantity", out _));
+        Assert.False(doc.TryGetProperty("availableKeys", out _));
+        Assert.False(doc.TryGetProperty("publishedByAdminId", out _));
+        Assert.False(doc.TryGetProperty("rowVersion", out _));
 
         var entries = doc.GetProperty("entries");
         Assert.Equal(2, entries.GetArrayLength());
 
-        // Ensure weights, probabilities, keys or ciphertext are not exposed
+        // Ensure weights, probabilities, stock, keys or ciphertext are not exposed
         var entry0 = entries[0];
         Assert.False(entry0.TryGetProperty("weight", out _));
         Assert.False(entry0.TryGetProperty("probabilityWeight", out _));
+        Assert.False(entry0.TryGetProperty("totalQuantity", out _));
+        Assert.False(entry0.TryGetProperty("stock", out _));
         Assert.False(entry0.TryGetProperty("key", out _));
         Assert.False(entry0.TryGetProperty("codeHash", out _));
     }

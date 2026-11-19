@@ -4,7 +4,7 @@
 
 - **Mục tiêu:** Triển khai luồng quay thưởng công khai (`Public Wheel & Spin Engine`) cho người dùng tham gia quay may mắn với Gmail, đảm bảo tính đúng đắn nghiệp vụ, giao dịch nguyên tử (atomic transaction), chống race condition / tranh chấp khóa thưởng, xử lý idempotent chặt chẽ và bảo vệ tuyệt đối thông tin nhạy cảm (`PrizeKey`).
 - **Phạm vi đã thực hiện:**
-    - `GET /api/public/wheels/{slug}`: Lấy thông tin vòng quay active theo slug (chỉ trả label, color, imageUrl, displayOrder, isNoPrize; tuyệt đối không để lộ weight, tổng số key còn lại, hoặc dữ liệu nhạy cảm).
+    - `GET /api/public/wheels/{slug}`: Lấy thông tin vòng quay active theo slug, trả thông tin vòng quay (`wheelId`, `name`, `slug`, `terms`), cửa sổ hiệu lực của phiên bản active (`versionId`, `versionNumber`, `startAtUtc`, `endAtUtc`) và danh sách `entries` (`id`, `displayOrder`, `label`, `color`, `imageUrl`, `isNoPrize`); chỉ trả vòng quay khả dụng theo contract hiện hành (không mở rộng trạng thái upcoming/ended) và tuyệt đối không để lộ weight, tồn kho, key chưa cấp, email hoặc dữ liệu quản trị.
     - `POST /api/public/wheels/{slug}/spins`: API quay thưởng công khai với header `Idempotency-Key` và payload `{ email, acceptedTerms }`.
     - Quy tắc xác thực và chuẩn hóa Gmail theo `LUCKY_WHEEL_BUSINESS_RULES.md` (§8): kiểm tra Gmail hợp lệ trước khi chuẩn hóa, trim whitespace, lowercase, chỉ chấp nhận domain `@gmail.com`, loại bỏ phần `+tag` và dấu chấm (`.`) trong local part; lưu `EmailOriginal` cho lịch sử và dùng `EmailNormalized` cho eligibility, `WinnerLock` và so sánh idempotency.
     - Khóa trúng thưởng `WinnerLock` theo cặp `(WheelId, EmailNormalized)`: người đã trúng giải (dù ở phiên bản nào) sẽ không được quay trúng thêm giải trên cùng một Wheel.
@@ -12,8 +12,9 @@
     - Phân bổ `PrizeKey` có điều kiện đồng thời cao: sử dụng SQL Server hint `UPDLOCK, READPAST, ROWLOCK` để chọn đúng 1 key `Available`, chuyển trạng thái sang `Assigned` và mã hóa/giải mã an toàn trong bộ nhớ; nếu giải được chọn không cấp được key `Available`, kết quả chuyển về luồng lưu/trả `NoPrize` dùng đúng phân khúc `NoPrize` của phiên bản đó (không tạo `WinnerLock`, không sửa key, trả HTTP 200).
     - Idempotency & Replay: Lưu trữ `IdempotencyKey` trong bảng `SpinHistories` (`IX_SpinHistories_IdempotencyKey` unique). Kiểm tra idempotency chạy ở đầu mỗi lần thử của `ExecutionStrategy` và được ưu tiên sau khi rollback mọi xung đột/trạng thái đóng trong transaction. Nếu người chơi gửi lại cùng `Idempotency-Key`, cùng `WheelId` và cùng `EmailNormalized` (bao gồm các biến thể cùng Gmail hợp lệ), hệ thống trả lại kết quả gốc đã lưu (kể cả khi Wheel đã đóng/vô hiệu hóa hoặc Gmail đã có `WinnerLock` active) mà không tiêu tốn thêm key hay tạo lượt quay mới. Nếu tái sử dụng `Idempotency-Key` với Wheel hoặc `EmailNormalized` khác, trả về HTTP 409 `IDEMPOTENCY_KEY_REUSED` và không làm rò rỉ dữ liệu gốc.
     - Tính nguyên tử & đồng thời (Bước 3): Sử dụng row-level shared lock (`WITH (REPEATABLEREAD, ROWLOCK)`) trên `Wheels` và `WheelVersions` khi quay, phối hợp với `WITH (XLOCK, ROWLOCK)` trên `Wheels` ở `CloseVersionAsync`/`ActivateVersionAsync`; xác định điểm admission bằng thời gian UTC mới ngay sau khi lấy đủ khóa `Wheel`/`WheelVersion` và tính `AssignedAtUtc`/`ExpiresAtUtc` theo thời điểm gán key (giữ nguyên `AcceptedTermsAtUtc` tại thời điểm nhận/xác thực request); phân bổ key bằng `UPDLOCK, READPAST, ROWLOCK` trên `PrizeKeys`; rollback + dispose transaction lỗi và dọn sạch state cục bộ của attempt trước khi resolve lại idempotency hoặc rethrow cho `ExecutionStrategy`.
+    - Public API Response & Snapshot thông tin giải (Bước 4): Lưu snapshot `PrizeNameSnapshot` và `PrizeDescriptionSnapshot` trực tiếp trên `SpinHistory` trong cùng transaction tạo `Win` (`NoPrize` không có snapshot); replay và lịch sử admin đọc từ snapshot thay vì bảng `Prizes` hiện tại, không backfill dữ liệu cũ và áp dụng fallback trung tính cố định `"Phần thưởng"` / `null` cho các `Win` cũ trước migration thiếu snapshot.
     - Rate Limiting tích hợp của ASP.NET Core (.NET 8 built-in `FixedWindowRateLimiter`) chống spam và bruteforce trên endpoint spin.
-    - Trạng thái Giai đoạn 8: **Đang triển khai (IN PROGRESS — chưa đánh dấu `COMPLETED`)**. Đã hoàn thiện Bước 1 (chuẩn hóa Gmail), Bước 2 (thang `1,000,000` + fallback `NoPrize`), và Bước 3 (idempotency đồng thời + tính nguyên tử Spin); các bước/phần còn lại như cooldown hoặc kiểm tra đầy đủ toàn Giai đoạn 8 tiếp tục thực hiện theo lộ trình.
+    - Trạng thái Giai đoạn 8: **Đang triển khai (IN PROGRESS — chưa đánh dấu `COMPLETED`)**. Đã hoàn thiện Bước 1 (chuẩn hóa Gmail), Bước 2 (thang `1,000,000` + fallback `NoPrize`), Bước 3 (idempotency đồng thời + tính nguyên tử Spin), và Bước 4 (hoàn thiện public wheel response & snapshot thông tin giải); các phần còn lại (như cooldown, trường hướng dẫn nhận thưởng khi domain bổ sung nguồn dữ liệu chính thức, và kiểm tra hoàn tất toàn Giai đoạn 8) tiếp tục thực hiện theo lộ trình.
 
 ---
 
@@ -62,12 +63,12 @@ sequenceDiagram
                 alt Trúng giải RequiresKey = true
                     Engine->>DB: SELECT TOP 1 FROM PrizeKeys WITH (UPDLOCK, READPAST, ROWLOCK)
                     alt Cấp được PrizeKey Available
-                        Engine->>Engine: Unprotect key in-memory; lấy assignedAtUtc mới, tính ExpiresAtUtc từ assignedAtUtc; tạo Win Spin (giữ AcceptedTermsAtUtc gốc) + WinnerLock + Assign key
+                        Engine->>Engine: Unprotect key in-memory; lấy assignedAtUtc mới, tính ExpiresAtUtc từ assignedAtUtc; tạo Win Spin (kèm snapshot tên/mô tả Prize, giữ AcceptedTermsAtUtc gốc) + WinnerLock + Assign key
                     else Hết key Available (Fallback NoPrize)
-                        Engine->>Engine: Tạo NoPrize Spin với NoPrizeSegment (không lock, không đổi key)
+                        Engine->>Engine: Tạo NoPrize Spin với NoPrizeSegment (không lock, không đổi key, không snapshot giải)
                     end
                 else Giải RequiresKey = false hoặc trúng ô NoPrize
-                    Engine->>Engine: Tạo Win Spin + WinnerLock hoặc NoPrize Spin
+                    Engine->>Engine: Tạo Win Spin (kèm snapshot tên/mô tả Prize) + WinnerLock hoặc NoPrize Spin
                 end
                 Engine->>DB: SaveChangesAsync(acceptAllChangesOnSuccess: false) -> CommitAsync -> AcceptAllChanges()
                 Engine-->>Api: Trả HTTP 200 SpinResultDto
@@ -154,6 +155,21 @@ sequenceDiagram
     - Sau khi rollback & đóng transaction lỗi hoàn toàn, hệ thống luôn đọc lại `TryResolveIdempotencyAsync` bằng trạng thái sạch trước khi kết luận `WHEEL_NOT_AVAILABLE` hoặc `EMAIL_ALREADY_WON` — đảm bảo replay luôn được ưu tiên ngay cả khi `WinnerLock` hoặc việc đóng Wheel diễn ra trước khi request thứ hai chạm tới `IX_SpinHistories_IdempotencyKey`.
     - Khi rớt kết nối ngay sau commit (`commit-confirmation failure`), lần retry tiếp theo của `SqlServerRetryingExecutionStrategy` chạy `TryResolveIdempotencyAsync` ở đầu attempt mới và replay đúng kết quả đã commit mà không tạo bản ghi trùng.
 
+### 3.5 Snapshot thông tin giải, dữ liệu cũ & hướng dẫn nhận thưởng
+
+- **Lưu snapshot tại `SpinHistory`:**
+    - `SpinHistory` bổ sung hai cột nullable `PrizeNameSnapshot` (`nvarchar(200)`) và `PrizeDescriptionSnapshot` (`nvarchar(1000)`).
+    - Mọi lượt `Win` mới tạo qua `SpinHistory.CreateWin(...)` bắt buộc cung cấp `PrizeNameSnapshot` không rỗng (`<= 200` ký tự) và `PrizeDescriptionSnapshot` (`null` hoặc `<= 1000` ký tự), được ghi nhận từ `Prize` tại thời điểm quay trong cùng transaction tạo Spin / gán `PrizeKey` / tạo `WinnerLock`.
+    - Mọi lượt `NoPrize` (bao gồm cả fallback hết key) luôn lưu `PrizeNameSnapshot = null` và `PrizeDescriptionSnapshot = null`.
+    - Không lưu plaintext key hoặc bản sao ciphertext key trong snapshot; replay và hiển thị kết quả tiếp tục đọc/giải mã từ `PrizeKey` gốc liên kết qua `SpinHistory.PrizeKeyId` và không tự chuyển sang replacement key của Giai đoạn 9.
+- **Ổn định lịch sử & xử lý bản ghi `Win` cũ trước migration:**
+    - Khi admin đổi tên hoặc mô tả `Prize`, các lượt quay cũ vẫn trả nguyên tên/mô tả đã lưu trong snapshot ở cả replay (`PublicWheelService.BuildReplayResponseAsync`) và lịch sử admin (`PrizeKeyService.GetWheelSpinsAsync`); lượt quay mới sử dụng thông tin `Prize` hiện hành.
+    - Trường hợp `Prize.Description` lúc quay là `null` vẫn giữ nguyên `null` khi replay dù admin bổ sung mô tả sau đó.
+    - Với bản ghi `Win` cũ đã tồn tại trước migration `AddSpinHistoryPrizeSnapshot` (không có snapshot, `PrizeNameSnapshot == null`): **không** backfill từ bảng `Prizes` hiện tại và **không** đọc fallback âm thầm từ `Prize` hiện hành (tránh gán nhầm thông tin giải đã đổi sau này). Cả replay và lịch sử admin đều dùng fallback trung tính cố định: `Name = "Phần thưởng"` (`SpinHistory.LegacyMissingPrizeNameFallback`) và `Description = null`, đồng thời giữ nguyên `PrizeId`, `PrizeKey` gốc và `KeyExpiresAtUtc`.
+- **Hướng dẫn nhận thưởng (Claim instructions):**
+    - Kiểm tra domain model hiện tại (`Wheel`, `WheelVersion`, `Prize`) cho thấy **chưa tồn tại trường nguồn riêng cho hướng dẫn nhận thưởng**.
+    - Public API cố ý không tự bịa nội dung hướng dẫn và không tái sử dụng `Wheel.Terms` hay `Prize.Description` làm hướng dẫn nhận thưởng. Khi domain/admin bổ sung trường dữ liệu chính thức, có thể mở rộng contract và snapshot tương ứng.
+
 ---
 
 ## 4. Đặc tả API
@@ -168,8 +184,11 @@ sequenceDiagram
         "wheelId": "550e8400-e29b-41d4-a716-446655440000",
         "name": "Vòng quay hè rực rỡ",
         "slug": "vong-quay-he-2026",
+        "terms": "Mỗi Gmail hợp lệ chỉ được trúng tối đa 1 giải trên vòng quay này.",
         "versionId": "660e8400-e29b-41d4-a716-446655440001",
         "versionNumber": 1,
+        "startAtUtc": "2026-08-01T00:00:00Z",
+        "endAtUtc": "2026-08-31T23:59:59Z",
         "entries": [
             {
                 "id": "770e8400-e29b-41d4-a716-446655440002",
@@ -190,7 +209,7 @@ sequenceDiagram
         ]
     }
     ```
-- **Response 404 Not Found:** Mã lỗi `WHEEL_NOT_AVAILABLE` khi vòng quay không tồn tại, bị disable hoặc không có phiên bản Active hợp lệ.
+- **Response 404 Not Found:** Mã lỗi `WHEEL_NOT_AVAILABLE` khi vòng quay không tồn tại, bị disable hoặc không có phiên bản Active hợp lệ trong cửa sổ thời gian hiệu lực.
 
 ---
 
@@ -217,13 +236,13 @@ sequenceDiagram
         "displayOrder": 1,
         "message": "Chúc mừng bạn đã trúng thưởng",
         "prize": {
-            "prizeId": "990e8400-e29b-41d4-a716-446655440004",
+            "id": "990e8400-e29b-41d4-a716-446655440004",
             "name": "Voucher 500k",
             "description": "Giảm 500k cho đơn hàng từ 2 triệu",
             "key": "LW-ABCD-EFGH-1234-5678",
             "keyExpiresAtUtc": "2026-08-19T13:00:00Z"
         },
-        "createdAtUtc": "2026-08-19T12:00:00Z"
+        "completedAtUtc": "2026-08-19T12:00:00Z"
     }
     ```
 - **Response 200 OK (Chúc may mắn lần sau):**
@@ -236,9 +255,13 @@ sequenceDiagram
         "displayOrder": 2,
         "message": "Chúc bạn may mắn lần sau",
         "prize": null,
-        "createdAtUtc": "2026-08-19T12:05:00Z"
+        "completedAtUtc": "2026-08-19T12:05:00Z"
     }
     ```
+- **Ghi chú contract:**
+    - `completedAtUtc` giữ nguyên tên trường hiện hành và ánh xạ trực tiếp từ `SpinHistory.CreatedAtUtc` (thời điểm UTC được ghi nhận khi khởi tạo bản ghi `SpinHistory` trước khi commit transaction, không phải thời điểm SQL Server xác nhận commit).
+    - `prize.name` và `prize.description` được lấy từ snapshot lưu trên `SpinHistory` (hoặc fallback trung tính `"Phần thưởng"` / `null` với bản ghi `Win` cũ trước migration thiếu snapshot).
+    - Chưa bổ sung trường hướng dẫn nhận thưởng do domain model chưa có trường nguồn riêng cho dữ liệu này.
 - **Bảng mã lỗi (Error Codes):**
   | HTTP Status | Error Code | Mô tả |
   | :--- | :--- | :--- |
@@ -262,4 +285,11 @@ sequenceDiagram
         - Index mới: `IX_SpinHistories_WheelVersionPrizeId_CreatedAtUtc`.
     2. `WinnerLocks`:
         - Cột `PrizeKeyId`: Cho phép nhận giá trị `NULL` (hỗ trợ trường hợp trúng giải vật lý / giải không yêu cầu mã).
+
+- **Migration:** `20261119171918_AddSpinHistoryPrizeSnapshot.cs`
+- **Thay đổi chi tiết:**
+    1. `SpinHistories`:
+        - Cột `PrizeNameSnapshot`: Thêm cột nullable `nvarchar(200) NULL` (không giá trị mặc định, không backfill dữ liệu cũ).
+        - Cột `PrizeDescriptionSnapshot`: Thêm cột nullable `nvarchar(1000) NULL` (không giá trị mặc định, không backfill dữ liệu cũ).
+        - Tương thích nâng cấp trực tiếp trên database đã có bản ghi `SpinHistories`.
 

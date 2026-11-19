@@ -54,6 +54,12 @@ public class SpinHistoryConfiguration : IEntityTypeConfiguration<SpinHistory>
         builder.Property(x => x.CreatedAtUtc)
             .IsRequired();
 
+        builder.Property(x => x.PrizeNameSnapshot)
+            .HasMaxLength(200);
+
+        builder.Property(x => x.PrizeDescriptionSnapshot)
+            .HasMaxLength(1000);
+
         builder.Property(x => x.CancellationReason)
             .HasMaxLength(1000);
 

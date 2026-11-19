@@ -109,8 +109,11 @@ public sealed class PublicWheelService(
             wheel.Id,
             wheel.Name,
             wheel.Slug,
+            wheel.Terms,
             activeVersion.Id,
             activeVersion.VersionNumber,
+            activeVersion.StartAtUtc,
+            activeVersion.EndAtUtc,
             entries);
     }
 
@@ -279,6 +282,8 @@ public sealed class PublicWheelService(
                                         originalEmail,
                                         normalizedEmail,
                                         prize.Id,
+                                        prize.Name,
+                                        prize.Description,
                                         allocatedKey?.Id,
                                         trimmedIdempotencyKey,
                                         receiptToken,
@@ -311,8 +316,8 @@ public sealed class PublicWheelService(
                                         "Chúc mừng bạn đã trúng thưởng",
                                         new SpinPrizeDto(
                                             prize.Id,
-                                            prize.Name,
-                                            prize.Description,
+                                            pendingSpin.PrizeNameSnapshot!,
+                                            pendingSpin.PrizeDescriptionSnapshot,
                                             plaintextKey,
                                             keyExpiresAtUtc),
                                         pendingSpin.CreatedAtUtc);
@@ -592,9 +597,6 @@ public sealed class PublicWheelService(
         SpinPrizeDto? prizeDto = null;
         if (spin.PrizeId.HasValue)
         {
-            var prize = await db.Prizes.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.Id == spin.PrizeId.Value, ct);
-
             string? plaintextKey = null;
             DateTime? keyExpiresAtUtc = null;
 
@@ -610,15 +612,20 @@ public sealed class PublicWheelService(
                 }
             }
 
-            if (prize != null)
-            {
-                prizeDto = new SpinPrizeDto(
-                    prize.Id,
-                    prize.Name,
-                    prize.Description,
-                    plaintextKey,
-                    keyExpiresAtUtc);
-            }
+            var hasSnapshot = !string.IsNullOrWhiteSpace(spin.PrizeNameSnapshot);
+            var prizeName = hasSnapshot
+                ? spin.PrizeNameSnapshot!
+                : SpinHistory.LegacyMissingPrizeNameFallback;
+            var prizeDescription = hasSnapshot
+                ? spin.PrizeDescriptionSnapshot
+                : null;
+
+            prizeDto = new SpinPrizeDto(
+                spin.PrizeId.Value,
+                prizeName,
+                prizeDescription,
+                plaintextKey,
+                keyExpiresAtUtc);
         }
 
         return new SpinResultDto(

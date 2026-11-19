@@ -46,6 +46,15 @@ public class EfModelMetadataTests
 
         Assert.All(context.Model.GetEntityTypes().SelectMany(x => x.GetForeignKeys()),
             foreignKey => Assert.Equal(DeleteBehavior.Restrict, foreignKey.DeleteBehavior));
+
+        var spinEntity = context.Model.FindEntityType(typeof(SpinHistory))!;
+        var prizeNameSnapshot = spinEntity.FindProperty(nameof(SpinHistory.PrizeNameSnapshot))!;
+        Assert.True(prizeNameSnapshot.IsNullable);
+        Assert.Equal(200, prizeNameSnapshot.GetMaxLength());
+
+        var prizeDescSnapshot = spinEntity.FindProperty(nameof(SpinHistory.PrizeDescriptionSnapshot))!;
+        Assert.True(prizeDescSnapshot.IsNullable);
+        Assert.Equal(1000, prizeDescSnapshot.GetMaxLength());
     }
 
     private static IIndex FindIndex<TEntity>(ApplicationDbContext context, params string[] propertyNames)

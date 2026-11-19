@@ -14,8 +14,11 @@ public sealed record PublicWheelDto(
     Guid WheelId,
     string Name,
     string Slug,
+    string Terms,
     Guid VersionId,
     int VersionNumber,
+    DateTime StartAtUtc,
+    DateTime EndAtUtc,
     IReadOnlyList<PublicWheelEntryDto> Entries);
 
 public sealed record PublicWheelEntryDto(

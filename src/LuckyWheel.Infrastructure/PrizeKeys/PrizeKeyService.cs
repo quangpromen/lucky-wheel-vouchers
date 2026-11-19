@@ -507,8 +507,6 @@ public sealed class PrizeKeyService(
         var rawItems = await (
             from s in query
             join v in db.WheelVersions.AsNoTracking() on s.WheelVersionId equals v.Id
-            join p in db.Prizes.AsNoTracking() on s.PrizeId equals p.Id into prizeJoin
-            from p in prizeJoin.DefaultIfEmpty()
             join k in db.PrizeKeys.AsNoTracking() on s.PrizeKeyId equals k.Id into keyJoin
             from k in keyJoin.DefaultIfEmpty()
             select new
@@ -518,10 +516,10 @@ public sealed class PrizeKeyService(
                 s.WheelVersionId,
                 VersionNumber = v.VersionNumber,
                 s.EmailOriginal,
-                Result = s.Result.ToString(),
+                s.Result,
                 Status = s.Status.ToString(),
                 s.PrizeId,
-                PrizeName = p != null ? p.Name : null,
+                s.PrizeNameSnapshot,
                 s.PrizeKeyId,
                 PrizeKeyStatus = k != null ? k.Status.ToString() : null,
                 s.CreatedAtUtc,
@@ -536,10 +534,10 @@ public sealed class PrizeKeyService(
             x.WheelVersionId,
             x.VersionNumber,
             MaskEmail(x.EmailOriginal),
-            x.Result,
+            x.Result.ToString(),
             x.Status,
             x.PrizeId,
-            x.PrizeName,
+            ResolveHistoricalPrizeName(x.Result, x.PrizeNameSnapshot),
             x.PrizeKeyId,
             x.PrizeKeyStatus,
             x.CreatedAtUtc,
@@ -548,6 +546,18 @@ public sealed class PrizeKeyService(
         )).ToList();
 
         return new PageResult<AdminSpinHistoryDto>(items, filter.PageNumber, filter.PageSize, total);
+    }
+
+    private static string? ResolveHistoricalPrizeName(SpinResult result, string? prizeNameSnapshot)
+    {
+        if (result != SpinResult.Win)
+        {
+            return null;
+        }
+
+        return string.IsNullOrWhiteSpace(prizeNameSnapshot)
+            ? SpinHistory.LegacyMissingPrizeNameFallback
+            : prizeNameSnapshot;
     }
 
     private static string MaskEmail(string email)

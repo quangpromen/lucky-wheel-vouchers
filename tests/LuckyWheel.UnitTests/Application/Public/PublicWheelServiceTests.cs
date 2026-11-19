@@ -156,7 +156,11 @@ public sealed class PublicWheelServiceTests
         Assert.Equal(wheel.Id, result.WheelId);
         Assert.Equal("Lucky Wheel", result.Name);
         Assert.Equal("lucky-wheel", result.Slug);
+        Assert.Equal("Terms", result.Terms);
         Assert.Equal(version.Id, result.VersionId);
+        Assert.Equal(version.VersionNumber, result.VersionNumber);
+        Assert.Equal(version.StartAtUtc, result.StartAtUtc);
+        Assert.Equal(version.EndAtUtc, result.EndAtUtc);
         Assert.Equal(2, result.Entries.Count);
         Assert.Equal("Voucher 10%", result.Entries[0].Label);
         Assert.Equal("Chúc bạn may mắn lần sau", result.Entries[1].Label);
@@ -1641,5 +1645,261 @@ public sealed class PublicWheelServiceTests
         Assert.Equal(response.ReceiptToken, replay.ReceiptToken);
         Assert.Equal(expectedExpiresAtUtc, replay.Prize?.KeyExpiresAtUtc);
         Assert.Equal("LW-ASSIGN-TIME-0001", replay.Prize?.Key);
+    }
+
+    [Fact]
+    public async Task SpinAsync_WinStoresPrizeSnapshot_ReplayPreservesOriginalAfterPrizeUpdateAndNewWinUsesUpdatedPrize()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 500k", "Áp dụng đơn 2 triệu", null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var protectedKey1 = _protector.Protect("LW-SNAP-0001-AAAA");
+        var key1 = new PrizeKey(prize.Id, protectedKey1.CodeHash, protectedKey1.EncryptedCode, protectedKey1.EncryptionNonce, protectedKey1.EncryptionTag, _now);
+        var protectedKey2 = _protector.Protect("LW-SNAP-0002-BBBB");
+        var key2 = new PrizeKey(prize.Id, protectedKey2.CodeHash, protectedKey2.EncryptedCode, protectedKey2.EncryptionNonce, protectedKey2.EncryptionTag, _now.AddSeconds(1));
+        db.PrizeKeys.AddRange(key1, key2);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var firstWin = await service.SpinAsync("lucky-wheel", "idemp-snap-1", new SpinRequest("winner1@gmail.com", true));
+
+        Assert.Equal("Win", firstWin.Result);
+        Assert.NotNull(firstWin.Prize);
+        Assert.Equal("Voucher 500k", firstWin.Prize!.Name);
+        Assert.Equal("Áp dụng đơn 2 triệu", firstWin.Prize.Description);
+        Assert.Equal("LW-SNAP-0001-AAAA", firstWin.Prize.Key);
+
+        var storedFirstSpin = await db.SpinHistories.SingleAsync(x => x.Id == firstWin.SpinId);
+        Assert.Equal("Voucher 500k", storedFirstSpin.PrizeNameSnapshot);
+        Assert.Equal("Áp dụng đơn 2 triệu", storedFirstSpin.PrizeDescriptionSnapshot);
+
+        // Admin updates prize name and description
+        prize.Update("Voucher 300k", "Áp dụng đơn 1 triệu", null, true, 10, _now.AddMinutes(5));
+        await db.SaveChangesAsync();
+
+        // Replay of first spin must still return the original snapshot and key
+        var replayFirst = await service.SpinAsync("lucky-wheel", "idemp-snap-1", new SpinRequest("winner1@gmail.com", true));
+        Assert.Equal(firstWin.SpinId, replayFirst.SpinId);
+        Assert.Equal(firstWin.ReceiptToken, replayFirst.ReceiptToken);
+        Assert.NotNull(replayFirst.Prize);
+        Assert.Equal(prize.Id, replayFirst.Prize!.Id);
+        Assert.Equal("Voucher 500k", replayFirst.Prize.Name);
+        Assert.Equal("Áp dụng đơn 2 triệu", replayFirst.Prize.Description);
+        Assert.Equal("LW-SNAP-0001-AAAA", replayFirst.Prize.Key);
+        Assert.Equal(firstWin.Prize.KeyExpiresAtUtc, replayFirst.Prize.KeyExpiresAtUtc);
+
+        // New win by another email uses the updated prize details
+        var secondWin = await service.SpinAsync("lucky-wheel", "idemp-snap-2", new SpinRequest("winner2@gmail.com", true));
+        Assert.Equal("Win", secondWin.Result);
+        Assert.NotNull(secondWin.Prize);
+        Assert.Equal("Voucher 300k", secondWin.Prize!.Name);
+        Assert.Equal("Áp dụng đơn 1 triệu", secondWin.Prize.Description);
+        Assert.Equal("LW-SNAP-0002-BBBB", secondWin.Prize.Key);
+
+        var storedSecondSpin = await db.SpinHistories.SingleAsync(x => x.Id == secondWin.SpinId);
+        Assert.Equal("Voucher 300k", storedSecondSpin.PrizeNameSnapshot);
+        Assert.Equal("Áp dụng đơn 1 triệu", storedSecondSpin.PrizeDescriptionSnapshot);
+    }
+
+    [Fact]
+    public async Task SpinAsync_WinWithNullDescription_ReplayKeepsNullDescriptionAfterPrizeDescriptionAdded()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Quà không mô tả", null, null, false, 10, _now);
+        db.Prizes.Add(prize);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var win = await service.SpinAsync("lucky-wheel", "idemp-null-desc", new SpinRequest("nulldesc@gmail.com", true));
+        Assert.Equal("Win", win.Result);
+        Assert.Equal("Quà không mô tả", win.Prize!.Name);
+        Assert.Null(win.Prize.Description);
+
+        var storedSpin = await db.SpinHistories.SingleAsync(x => x.Id == win.SpinId);
+        Assert.Equal("Quà không mô tả", storedSpin.PrizeNameSnapshot);
+        Assert.Null(storedSpin.PrizeDescriptionSnapshot);
+
+        prize.Update("Quà đã đổi tên", "Mô tả mới thêm sau", null, false, 10, _now.AddMinutes(5));
+        await db.SaveChangesAsync();
+
+        var replay = await service.SpinAsync("lucky-wheel", "idemp-null-desc", new SpinRequest("nulldesc@gmail.com", true));
+        Assert.Equal("Quà không mô tả", replay.Prize!.Name);
+        Assert.Null(replay.Prize.Description);
+    }
+
+    [Fact]
+    public async Task SpinAsync_DirectAndFallbackNoPrize_PersistNullPrizeSnapshots()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeOutOfStock = new Prize(wheel.Id, "Voucher Hết Mã", "Mô tả", null, true, 10, _now);
+        db.Prizes.Add(prizeOutOfStock);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prizeOutOfStock.Id, 500_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 500_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        // Fallback NoPrize (draws Prize out of stock)
+        var fallbackSvc = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+        var fallbackRes = await fallbackSvc.SpinAsync("lucky-wheel", "idemp-np-fallback", new SpinRequest("np1@gmail.com", true));
+        Assert.Equal("NoPrize", fallbackRes.Result);
+        Assert.Null(fallbackRes.Prize);
+
+        // Direct NoPrize (draws NoPrize segment directly)
+        var directSvc = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(750_000)), new FixedRandomProvider(750_000), _protector, _clock);
+        var directRes = await directSvc.SpinAsync("lucky-wheel", "idemp-np-direct", new SpinRequest("np2@gmail.com", true));
+        Assert.Equal("NoPrize", directRes.Result);
+        Assert.Null(directRes.Prize);
+
+        var spins = await db.SpinHistories.ToListAsync();
+        Assert.Equal(2, spins.Count);
+        Assert.All(spins, s =>
+        {
+            Assert.Equal(SpinResult.NoPrize, s.Result);
+            Assert.Null(s.PrizeNameSnapshot);
+            Assert.Null(s.PrizeDescriptionSnapshot);
+        });
+    }
+
+    [Fact]
+    public async Task SpinAsync_LegacyWinWithoutSnapshot_ReplayUsesFixedNeutralFallbackWithoutReadingCurrentPrize()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Tên giải hiện tại đã sửa", "Mô tả hiện tại đã sửa", null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var segPrize = new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now);
+        var segNoPrize = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segPrize, segNoPrize);
+
+        var protectedKey = _protector.Protect("LW-LEGACY-0001-ABCD");
+        var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now.AddDays(-1));
+        var legacySpin = SpinHistory.CreateWin(
+            wheel.Id,
+            version.Id,
+            segPrize.Id,
+            "legacy@gmail.com",
+            "legacy@gmail.com",
+            prize.Id,
+            "Temporary",
+            "Temporary Desc",
+            prizeKey.Id,
+            "idemp-legacy-win",
+            "RC-LEGACY-0001",
+            _now.AddHours(-2),
+            _now.AddHours(-2));
+        prizeKey.Assign(legacySpin.Id, _now.AddHours(-2), _now.AddHours(-1));
+
+        db.PrizeKeys.Add(prizeKey);
+        db.SpinHistories.Add(legacySpin);
+        // Simulate pre-migration legacy database row with NULL snapshot columns
+        db.Entry(legacySpin).Property(x => x.PrizeNameSnapshot).CurrentValue = null;
+        db.Entry(legacySpin).Property(x => x.PrizeDescriptionSnapshot).CurrentValue = null;
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+        var replay = await service.SpinAsync("lucky-wheel", "idemp-legacy-win", new SpinRequest("legacy@gmail.com", true));
+
+        Assert.Equal(legacySpin.Id, replay.SpinId);
+        Assert.Equal("Win", replay.Result);
+        Assert.NotNull(replay.Prize);
+        Assert.Equal(prize.Id, replay.Prize!.Id);
+        Assert.Equal(SpinHistory.LegacyMissingPrizeNameFallback, replay.Prize.Name);
+        Assert.Null(replay.Prize.Description);
+        Assert.Equal("LW-LEGACY-0001-ABCD", replay.Prize.Key);
+        Assert.Equal(_now.AddHours(-1), replay.Prize.KeyExpiresAtUtc);
+    }
+
+    [Fact]
+    public async Task SpinAsync_WinWithReplacementKeyCreated_ReplayStillReturnsOriginalKeyAndSnapshot()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 500k", "Áp dụng đơn 2 triệu", null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var protectedOrig = _protector.Protect("LW-ORIG-KEY-0001");
+        var origKey = new PrizeKey(prize.Id, protectedOrig.CodeHash, protectedOrig.EncryptedCode, protectedOrig.EncryptionNonce, protectedOrig.EncryptionTag, _now);
+        db.PrizeKeys.Add(origKey);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+        var win = await service.SpinAsync("lucky-wheel", "idemp-repl-check", new SpinRequest("winner@gmail.com", true));
+        Assert.Equal("LW-ORIG-KEY-0001", win.Prize!.Key);
+
+        // Simulate Stage 9 cancel + replacement key + prize rename
+        var storedOrigKey = await db.PrizeKeys.SingleAsync(x => x.Id == origKey.Id);
+        storedOrigKey.Cancel(_now.AddMinutes(10));
+        var protectedRepl = _protector.Protect("LW-REPL-KEY-9999");
+        var replKey = PrizeKey.CreateReplacement(
+            prize.Id,
+            win.SpinId,
+            protectedRepl.CodeHash,
+            protectedRepl.EncryptedCode,
+            protectedRepl.EncryptionNonce,
+            protectedRepl.EncryptionTag,
+            _now.AddMinutes(15),
+            _now.AddMinutes(75),
+            origKey.Id);
+        db.PrizeKeys.Add(replKey);
+        prize.Update("Voucher Renamed", "Mô tả khác", null, true, 10, _now.AddMinutes(20));
+        await db.SaveChangesAsync();
+
+        // Replay must keep reading original linked PrizeKey and original snapshot (never auto-switch to replacement key)
+        var replay = await service.SpinAsync("lucky-wheel", "idemp-repl-check", new SpinRequest("winner@gmail.com", true));
+        Assert.Equal(win.SpinId, replay.SpinId);
+        Assert.Equal("Voucher 500k", replay.Prize!.Name);
+        Assert.Equal("Áp dụng đơn 2 triệu", replay.Prize.Description);
+        Assert.Equal("LW-ORIG-KEY-0001", replay.Prize.Key);
+        Assert.Equal(_now.AddMinutes(60), replay.Prize.KeyExpiresAtUtc);
     }
 }
