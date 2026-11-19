@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using LuckyWheel.Application.Common.Exceptions;
@@ -12,6 +13,7 @@ using LuckyWheel.Infrastructure.Persistence;
 using LuckyWheel.Infrastructure.PrizeKeys;
 using LuckyWheel.Infrastructure.Public;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -29,6 +31,46 @@ public sealed class PublicWheelServiceTests
         public int GetInt32(int fromInclusive, int toExclusive) => (int)value;
         public long GetInt64(long fromInclusive, long toExclusive) => value;
         public byte[] GetBytes(int count) => new byte[count];
+    }
+
+    private sealed class RecordingPrizeSelector(IWeightedPrizeSelector inner) : IWeightedPrizeSelector
+    {
+        public IReadOnlyList<WheelVersionPrize>? LastCandidates { get; private set; }
+        public WheelVersionPrize? LastSelected { get; private set; }
+
+        public WheelVersionPrize Select(IReadOnlyList<WheelVersionPrize> eligibleCandidates)
+        {
+            LastCandidates = eligibleCandidates.ToList();
+            LastSelected = inner.Select(eligibleCandidates);
+            return LastSelected;
+        }
+    }
+
+    private sealed class CapturingLogger : ILogger<PublicWheelService>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+        }
+    }
+
+    private sealed class ThrowingUnprotectKeyProtector(IPrizeKeyProtector inner) : IPrizeKeyProtector
+    {
+        public string Normalize(string plaintextCode) => inner.Normalize(plaintextCode);
+        public ProtectedPrizeKey Protect(string plaintextCode) => inner.Protect(plaintextCode);
+        public string ComputeHash(string plaintextCode) => inner.ComputeHash(plaintextCode);
+        public string Unprotect(byte[] encryptedCode, byte[] nonce, byte[] tag)
+            => throw new CryptographicException("Simulated decryption failure.");
     }
 
     private readonly IPrizeKeyProtector _protector;
@@ -198,8 +240,9 @@ public sealed class PublicWheelServiceTests
         var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
         db.PrizeKeys.Add(prizeKey);
 
-        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
-        db.WheelVersionPrizes.Add(prizeSeg);
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(prizeSeg, noPrizeSeg);
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -245,8 +288,9 @@ public sealed class PublicWheelServiceTests
         var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
         db.PrizeKeys.Add(prizeKey);
 
-        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
-        db.WheelVersionPrizes.Add(prizeSeg);
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(prizeSeg, noPrizeSeg);
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -320,7 +364,7 @@ public sealed class PublicWheelServiceTests
     }
 
     [Fact]
-    public async Task SpinAsync_KeyedPrizeOutOfKeys_ExcludesFromEligibleCandidates()
+    public async Task SpinAsync_KeyedPrizeOutOfKeys_RemainsInDrawAndFallsBackToNoPrize()
     {
         using var db = CreateContext();
         var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
@@ -330,23 +374,43 @@ public sealed class PublicWheelServiceTests
         version.Activate(Guid.NewGuid(), _now);
         db.WheelVersions.Add(version);
 
-        var keyedPrize = new Prize(wheel.Id, "Voucher 100k", null, null, true, 10, _now);
-        db.Prizes.Add(keyedPrize);
+        var prizeA = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        var prizeB = new Prize(wheel.Id, "Prize B", null, null, true, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
 
-        // NO available keys in db for keyedPrize
-        var keyedSeg = new WheelVersionPrize(version.Id, keyedPrize.Id, 900_000, 1, "#FFAA00", null, false, _now);
-        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
-        db.WheelVersionPrizes.AddRange(keyedSeg, noPrizeSeg);
+        // Prize A has 0 available keys; Prize B has 1 available key
+        var protectedKeyB = _protector.Protect("LW-PRIZEB-0001-0001");
+        var keyB = new PrizeKey(prizeB.Id, protectedKeyB.CodeHash, protectedKeyB.EncryptedCode, protectedKeyB.EncryptionNonce, protectedKeyB.EncryptionTag, _now);
+        db.PrizeKeys.Add(keyB);
+
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 500_000, 1, "#FFAA00", null, false, _now);
+        var segB = new WheelVersionPrize(version.Id, prizeB.Id, 300_000, 2, "#00AAFF", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 3, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, segB, noPrizeSeg);
         await db.SaveChangesAsync();
 
-        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+        var selector = new RecordingPrizeSelector(new WeightedPrizeSelector(new FixedRandomProvider(0)));
+        var service = new PublicWheelService(db, selector, new FixedRandomProvider(0), _protector, _clock);
 
-        // Even though random value is 0 (which would map to keyedSeg if it were eligible),
-        // keyedSeg is excluded because it has 0 available keys, so only noPrizeSeg is eligible.
         var response = await service.SpinAsync("lucky-wheel", "idemp-out-of-stock", new SpinRequest("user@gmail.com", true));
 
+        // Prize A must NOT be filtered out prior to drawing
+        Assert.NotNull(selector.LastCandidates);
+        Assert.Equal(3, selector.LastCandidates.Count);
+        Assert.Contains(selector.LastCandidates, s => s.Id == segA.Id);
+        Assert.Equal(1_000_000L, selector.LastCandidates.Sum(s => (long)s.ProbabilityWeight));
+        Assert.Equal(segA.Id, selector.LastSelected?.Id);
+
+        // Because Prize A cannot allocate a key, result falls back to NoPrize (not Prize B)
         Assert.Equal("NoPrize", response.Result);
+        Assert.Null(response.Prize);
         Assert.Equal(noPrizeSeg.Id, response.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, response.DisplayOrder);
+
+        // Prize B's key must remain untouched
+        var storedKeyB = await db.PrizeKeys.SingleAsync(x => x.Id == keyB.Id);
+        Assert.Equal(PrizeKeyStatus.Available, storedKeyB.Status);
+        Assert.Null(storedKeyB.AssignedSpinId);
     }
 
     [Fact]
@@ -367,8 +431,9 @@ public sealed class PublicWheelServiceTests
         var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
         db.PrizeKeys.Add(prizeKey);
 
-        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
-        db.WheelVersionPrizes.Add(prizeSeg);
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(prizeSeg, noPrizeSeg);
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -407,8 +472,9 @@ public sealed class PublicWheelServiceTests
         var prize = new Prize(wheel.Id, "Voucher 100k", null, null, false, 10, _now);
         db.Prizes.Add(prize);
 
-        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
-        db.WheelVersionPrizes.Add(prizeSeg);
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(prizeSeg, noPrizeSeg);
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -443,8 +509,11 @@ public sealed class PublicWheelServiceTests
         var prizeB = new Prize(wheelB.Id, "Gift B", null, null, false, 10, _now);
         db.Prizes.AddRange(prizeA, prizeB);
 
-        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionA1.Id, prizeA.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
-        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionB1.Id, prizeB.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(versionA1.Id, prizeA.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(versionA1.Id, null, 100_000, 2, "#CCCCCC", null, true, _now),
+            new WheelVersionPrize(versionB1.Id, prizeB.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(versionB1.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -457,7 +526,9 @@ public sealed class PublicWheelServiceTests
         var versionA2 = new WheelVersion(wheelA.Id, 2, _now.AddDays(-1), _now.AddDays(7), 60, _now);
         versionA2.Activate(Guid.NewGuid(), _now);
         db.WheelVersions.Add(versionA2);
-        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionA2.Id, prizeA.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(versionA2.Id, prizeA.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(versionA2.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
         await db.SaveChangesAsync();
 
         // Variant must still be locked on Wheel A Version 2
@@ -519,7 +590,9 @@ public sealed class PublicWheelServiceTests
         var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
         db.PrizeKeys.Add(prizeKey);
 
-        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -606,7 +679,9 @@ public sealed class PublicWheelServiceTests
 
         var prize = new Prize(wheel.Id, "Voucher 100k", null, null, false, 10, _now);
         db.Prizes.Add(prize);
-        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 900_000, 1, "#FFAA00", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 100_000, 2, "#CCCCCC", null, true, _now));
         await db.SaveChangesAsync();
 
         var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
@@ -650,5 +725,553 @@ public sealed class PublicWheelServiceTests
 
         Assert.Equal("EMAIL_ALREADY_WON", ex.Code);
         Assert.Equal(0, await db.SpinHistories.CountAsync());
+    }
+
+    [Theory]
+    [InlineData(0L, false)]
+    [InlineData(499_999L, false)]
+    [InlineData(500_000L, true)]
+    [InlineData(799_999L, true)]
+    [InlineData(800_000L, false)]
+    [InlineData(999_999L, false)]
+    public async Task SpinAsync_PrizeAOutOfKeys_PrizeBSelectionIntervalRemainsUnchanged(long randomValue, bool expectedWinPrizeB)
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeA = new Prize(wheel.Id, "Prize A", "Big prize", null, true, 10, _now);
+        var prizeB = new Prize(wheel.Id, "Prize B", "Medium prize", null, true, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
+
+        // Prize A has 0 available keys; Prize B has 1 available key
+        var protectedKeyB = _protector.Protect("LW-PRIZEB-INTERVAL-1");
+        var keyB = new PrizeKey(prizeB.Id, protectedKeyB.CodeHash, protectedKeyB.EncryptedCode, protectedKeyB.EncryptionNonce, protectedKeyB.EncryptionTag, _now);
+        db.PrizeKeys.Add(keyB);
+
+        // A = 500_000 [0..500_000), B = 300_000 [500_000..800_000), NoPrize = 200_000 [800_000..1_000_000)
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 500_000, 1, "#FF0000", null, false, _now);
+        var segB = new WheelVersionPrize(version.Id, prizeB.Id, 300_000, 2, "#00FF00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 3, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, segB, noPrizeSeg);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(
+            db,
+            new WeightedPrizeSelector(new FixedRandomProvider(randomValue)),
+            new FixedRandomProvider(randomValue),
+            _protector,
+            _clock);
+
+        var response = await service.SpinAsync("lucky-wheel", $"idemp-interval-{randomValue}", new SpinRequest("player@gmail.com", true));
+
+        var spin = await db.SpinHistories.SingleAsync();
+        if (expectedWinPrizeB)
+        {
+            Assert.Equal("Win", response.Result);
+            Assert.Equal(segB.Id, response.EntryId);
+            Assert.Equal(segB.DisplayOrder, response.DisplayOrder);
+            Assert.NotNull(response.Prize);
+            Assert.Equal(prizeB.Id, response.Prize.Id);
+            Assert.Equal("LW-PRIZEB-INTERVAL-1", response.Prize.Key);
+            Assert.Equal(_now.AddMinutes(60), response.Prize.KeyExpiresAtUtc);
+
+            Assert.Equal(SpinResult.Win, spin.Result);
+            Assert.Equal(SpinStatus.Completed, spin.Status);
+            Assert.Equal(prizeB.Id, spin.PrizeId);
+            Assert.Equal(keyB.Id, spin.PrizeKeyId);
+            Assert.Equal(segB.Id, spin.WheelVersionPrizeId);
+
+            var storedKeyB = await db.PrizeKeys.SingleAsync(x => x.Id == keyB.Id);
+            Assert.Equal(PrizeKeyStatus.Assigned, storedKeyB.Status);
+            Assert.Equal(spin.Id, storedKeyB.AssignedSpinId);
+            Assert.Equal(1, await db.WinnerLocks.CountAsync(x => x.WheelId == wheel.Id && x.IsActive));
+        }
+        else
+        {
+            Assert.Equal("NoPrize", response.Result);
+            Assert.Null(response.Prize);
+            Assert.Equal(noPrizeSeg.Id, response.EntryId);
+            Assert.Equal(noPrizeSeg.DisplayOrder, response.DisplayOrder);
+
+            Assert.Equal(SpinResult.NoPrize, spin.Result);
+            Assert.Equal(SpinStatus.Completed, spin.Status);
+            Assert.Null(spin.PrizeId);
+            Assert.Null(spin.PrizeKeyId);
+            Assert.Equal(noPrizeSeg.Id, spin.WheelVersionPrizeId);
+
+            var storedKeyB = await db.PrizeKeys.SingleAsync(x => x.Id == keyB.Id);
+            Assert.Equal(PrizeKeyStatus.Available, storedKeyB.Status);
+            Assert.Null(storedKeyB.AssignedSpinId);
+            Assert.Equal(0, await db.WinnerLocks.CountAsync());
+        }
+    }
+
+    [Fact]
+    public async Task SpinAsync_SelectedPrizeOutOfKeys_SavesAndReturnsNoPrizeWithoutWinnerLockOrKeyMutation()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeA = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        var prizeB = new Prize(wheel.Id, "Prize B", null, null, true, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
+
+        // Prize A only has an already-assigned key (0 Available); Prize B has an Available key
+        var protectedAssignedKeyA = _protector.Protect("LW-PRIZEA-ASSIGNED-1");
+        var assignedKeyA = new PrizeKey(prizeA.Id, protectedAssignedKeyA.CodeHash, protectedAssignedKeyA.EncryptedCode, protectedAssignedKeyA.EncryptionNonce, protectedAssignedKeyA.EncryptionTag, _now.AddMinutes(-30));
+        var priorSpinId = Guid.NewGuid();
+        assignedKeyA.Assign(priorSpinId, _now.AddMinutes(-20), _now.AddMinutes(40));
+
+        var protectedKeyB = _protector.Protect("LW-PRIZEB-AVAIL-1");
+        var keyB = new PrizeKey(prizeB.Id, protectedKeyB.CodeHash, protectedKeyB.EncryptedCode, protectedKeyB.EncryptionNonce, protectedKeyB.EncryptionTag, _now);
+        db.PrizeKeys.AddRange(assignedKeyA, keyB);
+
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 500_000, 1, "#FF0000", null, false, _now);
+        var segB = new WheelVersionPrize(version.Id, prizeB.Id, 300_000, 2, "#00FF00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 3, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, segB, noPrizeSeg);
+        await db.SaveChangesAsync();
+
+        var logger = new CapturingLogger();
+        var service = new PublicWheelService(
+            db,
+            new WeightedPrizeSelector(new FixedRandomProvider(123_456)),
+            new FixedRandomProvider(123_456),
+            _protector,
+            _clock,
+            logger);
+
+        const string rawEmail = "Player.Secret+tag@gmail.com";
+        const string idempKey = "idemp-fallback-secret-1";
+
+        var response = await service.SpinAsync("lucky-wheel", idempKey, new SpinRequest(rawEmail, true));
+
+        // Response must match NoPrize segment of same version
+        Assert.Equal("NoPrize", response.Result);
+        Assert.Null(response.Prize);
+        Assert.Equal(noPrizeSeg.Id, response.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, response.DisplayOrder);
+        Assert.Equal("Chúc bạn may mắn lần sau", response.Message);
+
+        // Database must contain exactly one NoPrize Completed spin with no PrizeId, PrizeKeyId, or WinnerLock
+        var spin = await db.SpinHistories.SingleAsync();
+        Assert.Equal(response.SpinId, spin.Id);
+        Assert.Equal(SpinResult.NoPrize, spin.Result);
+        Assert.Equal(SpinStatus.Completed, spin.Status);
+        Assert.Null(spin.PrizeId);
+        Assert.Null(spin.PrizeKeyId);
+        Assert.Equal(noPrizeSeg.Id, spin.WheelVersionPrizeId);
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+
+        // Keys must not be assigned or mutated
+        var storedKeyA = await db.PrizeKeys.SingleAsync(x => x.Id == assignedKeyA.Id);
+        Assert.Equal(PrizeKeyStatus.Assigned, storedKeyA.Status);
+        Assert.Equal(priorSpinId, storedKeyA.AssignedSpinId);
+
+        var storedKeyB = await db.PrizeKeys.SingleAsync(x => x.Id == keyB.Id);
+        Assert.Equal(PrizeKeyStatus.Available, storedKeyB.Status);
+        Assert.Null(storedKeyB.AssignedSpinId);
+
+        // Safe diagnostic log must use only IDs and safe reason (no email, key, receipt, or idempotency key)
+        var logEntry = Assert.Single(logger.Messages);
+        Assert.Contains(wheel.Id.ToString(), logEntry);
+        Assert.Contains(version.Id.ToString(), logEntry);
+        Assert.Contains(segA.Id.ToString(), logEntry);
+        Assert.Contains(prizeA.Id.ToString(), logEntry);
+        Assert.Contains(noPrizeSeg.Id.ToString(), logEntry);
+        Assert.Contains("NO_AVAILABLE_PRIZE_KEY", logEntry);
+        Assert.DoesNotContain("player", logEntry, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("gmail", logEntry, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(idempKey, logEntry, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(response.ReceiptToken, logEntry, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("LW-PRIZE", logEntry, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SpinAsync_DirectNoPrizeSelectionInMultiSegmentWheel_SavesNoPrizeWithoutTouchingKeys()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeA = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        var prizeB = new Prize(wheel.Id, "Prize B", null, null, true, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
+
+        var protectedKeyA = _protector.Protect("LW-DIRECT-NP-A");
+        var keyA = new PrizeKey(prizeA.Id, protectedKeyA.CodeHash, protectedKeyA.EncryptedCode, protectedKeyA.EncryptionNonce, protectedKeyA.EncryptionTag, _now);
+        var protectedKeyB = _protector.Protect("LW-DIRECT-NP-B");
+        var keyB = new PrizeKey(prizeB.Id, protectedKeyB.CodeHash, protectedKeyB.EncryptedCode, protectedKeyB.EncryptionNonce, protectedKeyB.EncryptionTag, _now);
+        db.PrizeKeys.AddRange(keyA, keyB);
+
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 500_000, 1, "#FF0000", null, false, _now);
+        var segB = new WheelVersionPrize(version.Id, prizeB.Id, 300_000, 2, "#00FF00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 3, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, segB, noPrizeSeg);
+        await db.SaveChangesAsync();
+
+        var logger = new CapturingLogger();
+        var service = new PublicWheelService(
+            db,
+            new WeightedPrizeSelector(new FixedRandomProvider(850_000)),
+            new FixedRandomProvider(850_000),
+            _protector,
+            _clock,
+            logger);
+
+        var response = await service.SpinAsync("lucky-wheel", "idemp-direct-noprize", new SpinRequest("player@gmail.com", true));
+
+        Assert.Equal("NoPrize", response.Result);
+        Assert.Null(response.Prize);
+        Assert.Equal(noPrizeSeg.Id, response.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, response.DisplayOrder);
+
+        var spin = await db.SpinHistories.SingleAsync();
+        Assert.Equal(SpinResult.NoPrize, spin.Result);
+        Assert.Equal(SpinStatus.Completed, spin.Status);
+        Assert.Null(spin.PrizeId);
+        Assert.Null(spin.PrizeKeyId);
+        Assert.Equal(noPrizeSeg.Id, spin.WheelVersionPrizeId);
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+        Assert.Equal(2, await db.PrizeKeys.CountAsync(x => x.Status == PrizeKeyStatus.Available));
+        Assert.Empty(logger.Messages);
+    }
+
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(500_000L)]
+    [InlineData(800_000L)]
+    public async Task SpinAsync_AllKeyedPrizesOutOfStock_StillSavesAndReturnsNoPrize(long randomValue)
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeA = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        var prizeB = new Prize(wheel.Id, "Prize B", null, null, true, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
+
+        // Neither Prize A nor Prize B has any Available keys
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 500_000, 1, "#FF0000", null, false, _now);
+        var segB = new WheelVersionPrize(version.Id, prizeB.Id, 300_000, 2, "#00FF00", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 3, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, segB, noPrizeSeg);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(
+            db,
+            new WeightedPrizeSelector(new FixedRandomProvider(randomValue)),
+            new FixedRandomProvider(randomValue),
+            _protector,
+            _clock);
+
+        var response = await service.SpinAsync("lucky-wheel", $"idemp-all-empty-{randomValue}", new SpinRequest("player@gmail.com", true));
+
+        Assert.Equal("NoPrize", response.Result);
+        Assert.Null(response.Prize);
+        Assert.Equal(noPrizeSeg.Id, response.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, response.DisplayOrder);
+
+        var spin = await db.SpinHistories.SingleAsync();
+        Assert.Equal(SpinResult.NoPrize, spin.Result);
+        Assert.Equal(SpinStatus.Completed, spin.Status);
+        Assert.Null(spin.PrizeId);
+        Assert.Null(spin.PrizeKeyId);
+        Assert.Equal(noPrizeSeg.Id, spin.WheelVersionPrizeId);
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_RetrySameIdempotencyKeyAfterKeyReplenished_ReturnsOriginalNoPrizeWithoutRespinning()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prizeA = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        db.Prizes.Add(prizeA);
+
+        var segA = new WheelVersionPrize(version.Id, prizeA.Id, 800_000, 1, "#FF0000", null, false, _now);
+        var noPrizeSeg = new WheelVersionPrize(version.Id, null, 200_000, 2, "#CCCCCC", null, true, _now);
+        db.WheelVersionPrizes.AddRange(segA, noPrizeSeg);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(
+            db,
+            new WeightedPrizeSelector(new FixedRandomProvider(0)),
+            new FixedRandomProvider(0),
+            _protector,
+            _clock);
+
+        // First spin hits Prize A while out of keys -> falls back to NoPrize
+        var firstResponse = await service.SpinAsync("lucky-wheel", "idemp-replenish-retry", new SpinRequest("player@gmail.com", true));
+        Assert.Equal("NoPrize", firstResponse.Result);
+        Assert.Equal(noPrizeSeg.Id, firstResponse.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, firstResponse.DisplayOrder);
+
+        // Replenish stock for Prize A
+        var protectedNewKey = _protector.Protect("LW-REPLENISHED-0001");
+        var replenishedKey = new PrizeKey(prizeA.Id, protectedNewKey.CodeHash, protectedNewKey.EncryptedCode, protectedNewKey.EncryptionNonce, protectedNewKey.EncryptionTag, _now.AddMinutes(1));
+        db.PrizeKeys.Add(replenishedKey);
+        await db.SaveChangesAsync();
+
+        // Retry with the exact same idempotency key must replay the stored NoPrize spin without re-spinning
+        var replayResponse = await service.SpinAsync("lucky-wheel", "idemp-replenish-retry", new SpinRequest("player@gmail.com", true));
+
+        Assert.Equal(firstResponse.SpinId, replayResponse.SpinId);
+        Assert.Equal(firstResponse.ReceiptToken, replayResponse.ReceiptToken);
+        Assert.Equal("NoPrize", replayResponse.Result);
+        Assert.Null(replayResponse.Prize);
+        Assert.Equal(noPrizeSeg.Id, replayResponse.EntryId);
+        Assert.Equal(noPrizeSeg.DisplayOrder, replayResponse.DisplayOrder);
+
+        Assert.Equal(1, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+
+        var storedNewKey = await db.PrizeKeys.SingleAsync(x => x.Id == replenishedKey.Id);
+        Assert.Equal(PrizeKeyStatus.Available, storedNewKey.Status);
+        Assert.Null(storedNewKey.AssignedSpinId);
+    }
+
+    [Fact]
+    public async Task SpinAsync_NoSegmentsConfigured_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-invalid-empty", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Theory]
+    [InlineData(500_000, 200_000)]
+    [InlineData(600_000, 500_000)]
+    public async Task SpinAsync_TotalWeightNotOneMillion_ThrowsInvalidOperationExceptionWithoutFallback(int prizeWeight, int noPrizeWeight)
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        db.Prizes.Add(prize);
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, prizeWeight, 1, "#FF0000", null, false, _now),
+            new WheelVersionPrize(version.Id, null, noPrizeWeight, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", $"idemp-bad-weight-{prizeWeight}", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_MissingNoPrizeSegment_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        db.Prizes.Add(prize);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FF0000", null, false, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-no-noprize", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_MultipleNoPrizeSegments_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, null, 500_000, 1, "#CCCCCC", null, true, _now),
+            new WheelVersionPrize(version.Id, null, 500_000, 2, "#DDDDDD", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-multi-noprize", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_DisabledPrizeReferencedInActiveVersion_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var disabledPrize = new Prize(wheel.Id, "Disabled Prize", null, null, true, 10, _now);
+        disabledPrize.Disable(_now);
+        db.Prizes.Add(disabledPrize);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, disabledPrize.Id, 500_000, 1, "#FF0000", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 500_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-disabled-prize", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_MissingPrizeReferencedInActiveVersion_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, Guid.NewGuid(), 500_000, 1, "#FF0000", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 500_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-missing-prize", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_CrossWheelPrizeReferencedInActiveVersion_ThrowsInvalidOperationExceptionWithoutFallback()
+    {
+        using var db = CreateContext();
+        var wheelA = new Wheel("Wheel A", "wheel-a", "Description", "Terms", _now);
+        var wheelB = new Wheel("Wheel B", "wheel-b", "Description", "Terms", _now);
+        db.Wheels.AddRange(wheelA, wheelB);
+
+        var versionA = new WheelVersion(wheelA.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        versionA.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(versionA);
+
+        var foreignPrize = new Prize(wheelB.Id, "Foreign Prize", null, null, true, 10, _now);
+        db.Prizes.Add(foreignPrize);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(versionA.Id, foreignPrize.Id, 500_000, 1, "#FF0000", null, false, _now),
+            new WheelVersionPrize(versionA.Id, null, 500_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SpinAsync("wheel-a", "idemp-cross-wheel-prize", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_KeyDecryptionFailure_PropagatesErrorWithoutFallbackToNoPrize()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Prize A", null, null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var protectedKey = _protector.Protect("LW-CORRUPTED-KEY-1");
+        var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
+        db.PrizeKeys.Add(prizeKey);
+
+        db.WheelVersionPrizes.AddRange(
+            new WheelVersionPrize(version.Id, prize.Id, 500_000, 1, "#FF0000", null, false, _now),
+            new WheelVersionPrize(version.Id, null, 500_000, 2, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var failingProtector = new ThrowingUnprotectKeyProtector(_protector);
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), failingProtector, _clock);
+
+        await Assert.ThrowsAsync<CryptographicException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-decrypt-error", new SpinRequest("player@gmail.com", true)));
+
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+
+        var storedKey = await db.PrizeKeys.SingleAsync(x => x.Id == prizeKey.Id);
+        Assert.Equal(PrizeKeyStatus.Available, storedKey.Status);
+        Assert.Null(storedKey.AssignedSpinId);
     }
 }

@@ -14,6 +14,8 @@ using LuckyWheel.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LuckyWheel.Infrastructure.Public;
 
@@ -22,8 +24,10 @@ public sealed class PublicWheelService(
     IWeightedPrizeSelector prizeSelector,
     IRandomNumberProvider randomProvider,
     IPrizeKeyProtector keyProtector,
-    IClock clock) : IPublicWheelService
+    IClock clock,
+    ILogger<PublicWheelService>? logger = null) : IPublicWheelService
 {
+    private readonly ILogger<PublicWheelService> _logger = logger ?? NullLogger<PublicWheelService>.Instance;
     public async Task<PublicWheelDto> GetActiveWheelBySlugAsync(string slug, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(slug))
@@ -172,164 +176,223 @@ public sealed class PublicWheelService(
                 .OrderBy(x => x.DisplayOrder)
                 .ToListAsync(ct);
 
-            if (segments.Count == 0)
-                throw new ConflictException("WHEEL_TEMPORARILY_UNAVAILABLE", "No eligible prize options are currently available.");
+            var noPrizeSegment = ValidateAndGetNoPrizeSegment(activeVersion.Id, segments);
 
-            var prizeIds = segments.Where(x => !x.IsNoPrize && x.PrizeId.HasValue)
+            var prizeIds = segments
+                .Where(x => !x.IsNoPrize)
                 .Select(x => x.PrizeId!.Value)
                 .Distinct()
                 .ToList();
 
-            var prizes = await db.Prizes
-                .Where(x => prizeIds.Contains(x.Id))
-                .ToDictionaryAsync(x => x.Id, ct);
+            var prizes = prizeIds.Count == 0
+                ? new Dictionary<Guid, Prize>()
+                : await db.Prizes
+                    .Where(x => prizeIds.Contains(x.Id))
+                    .ToDictionaryAsync(x => x.Id, ct);
 
-            // Check remaining key counts for keyed prizes
-            var availableKeyCounts = await db.PrizeKeys
-                .Where(k => prizeIds.Contains(k.PrizeId) && k.Status == PrizeKeyStatus.Available)
-                .GroupBy(k => k.PrizeId)
-                .Select(g => new { PrizeId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.PrizeId, x => x.Count, ct);
+            ValidateReferencedPrizes(wheel.Id, activeVersion.Id, prizeIds, prizes);
 
-            // Filter eligible candidates
-            var eligibleCandidates = new List<WheelVersionPrize>();
-            foreach (var segment in segments)
-            {
-                if (segment.IsNoPrize || !segment.PrizeId.HasValue)
-                {
-                    eligibleCandidates.Add(segment);
-                    continue;
-                }
-
-                if (prizes.TryGetValue(segment.PrizeId.Value, out var prize) && prize.IsEnabled && prize.WheelId == wheel.Id)
-                {
-                    if (!prize.RequiresKey)
-                    {
-                        eligibleCandidates.Add(segment);
-                    }
-                    else if (availableKeyCounts.TryGetValue(prize.Id, out var count) && count > 0)
-                    {
-                        eligibleCandidates.Add(segment);
-                    }
-                }
-            }
-
-            if (eligibleCandidates.Count == 0)
-                throw new ConflictException("WHEEL_TEMPORARILY_UNAVAILABLE", "No eligible prize options are currently available.");
-
-            // Weighted selection
-            var winningSegment = prizeSelector.Select(eligibleCandidates);
+            // Weighted selection across all configured segments on the 1_000_000 scale
+            var selectedSegment = prizeSelector.Select(segments);
             var receiptToken = GenerateReceiptToken();
 
-            if (winningSegment.IsNoPrize || !winningSegment.PrizeId.HasValue)
+            if (!selectedSegment.IsNoPrize)
             {
-                var spin = SpinHistory.CreateNoPrize(
-                    wheel.Id,
-                    activeVersion.Id,
-                    winningSegment.Id,
-                    originalEmail,
-                    normalizedEmail,
-                    trimmedIdempotencyKey,
-                    receiptToken,
-                    now,
-                    now);
-
-                db.SpinHistories.Add(spin);
-                await SaveAndCommitAsync(tx, ct);
-
-                return new SpinResultDto(
-                    spin.Id,
-                    spin.ReceiptToken,
-                    "NoPrize",
-                    winningSegment.Id,
-                    winningSegment.DisplayOrder,
-                    "Chúc bạn may mắn lần sau",
-                    null,
-                    spin.CreatedAtUtc);
-            }
-            else
-            {
-                var prize = prizes[winningSegment.PrizeId.Value];
+                var prize = prizes[selectedSegment.PrizeId!.Value];
                 PrizeKey? allocatedKey = null;
                 string? plaintextKey = null;
                 DateTime? keyExpiresAtUtc = null;
+                var canAwardWin = true;
 
                 if (prize.RequiresKey)
                 {
-                    // Atomic key allocation with SQL Server locking hints (UPDLOCK, READPAST, ROWLOCK)
-                    PrizeKey? availableKey;
-                    if (db.Database.IsSqlServer())
+                    allocatedKey = await TryAllocateAvailableKeyAsync(prize.Id, ct);
+                    if (allocatedKey == null)
                     {
-                        availableKey = await db.PrizeKeys
-                            .FromSqlRaw(
-                                "SELECT TOP (1) * FROM [PrizeKeys] WITH (UPDLOCK, READPAST, ROWLOCK) WHERE [PrizeId] = {0} AND [Status] = 'Available' ORDER BY [CreatedAtUtc] ASC",
-                                prize.Id)
-                            .SingleOrDefaultAsync(ct);
+                        canAwardWin = false;
+                        _logger.LogInformation(
+                            "Spin fell back to NoPrize because no available prize key could be allocated. WheelId={WheelId} WheelVersionId={WheelVersionId} SelectedSegmentId={SelectedSegmentId} PrizeId={PrizeId} FallbackSegmentId={FallbackSegmentId} Reason={Reason}",
+                            wheel.Id,
+                            activeVersion.Id,
+                            selectedSegment.Id,
+                            prize.Id,
+                            noPrizeSegment.Id,
+                            "NO_AVAILABLE_PRIZE_KEY");
                     }
                     else
                     {
-                        availableKey = await db.PrizeKeys
-                            .Where(k => k.PrizeId == prize.Id && k.Status == PrizeKeyStatus.Available)
-                            .OrderBy(k => k.CreatedAtUtc)
-                            .FirstOrDefaultAsync(ct);
+                        keyExpiresAtUtc = now.AddMinutes(activeVersion.ClaimDurationMinutes);
+                        plaintextKey = keyProtector.Unprotect(allocatedKey.EncryptedCode, allocatedKey.EncryptionNonce, allocatedKey.EncryptionTag);
                     }
-
-                    if (availableKey == null)
-                    {
-                        throw new ConflictException("WHEEL_TEMPORARILY_UNAVAILABLE", "The selected prize is temporarily unavailable. Please retry.");
-                    }
-
-                    allocatedKey = availableKey;
-                    keyExpiresAtUtc = now.AddMinutes(activeVersion.ClaimDurationMinutes);
-                    plaintextKey = keyProtector.Unprotect(allocatedKey.EncryptedCode, allocatedKey.EncryptionNonce, allocatedKey.EncryptionTag);
                 }
 
-                var spin = SpinHistory.CreateWin(
-                    wheel.Id,
-                    activeVersion.Id,
-                    winningSegment.Id,
-                    originalEmail,
-                    normalizedEmail,
-                    prize.Id,
-                    allocatedKey?.Id,
-                    trimmedIdempotencyKey,
-                    receiptToken,
-                    now,
-                    now);
-
-                if (allocatedKey != null && keyExpiresAtUtc.HasValue)
+                if (canAwardWin)
                 {
-                    allocatedKey.Assign(spin.Id, now, keyExpiresAtUtc.Value);
+                    var winSpin = SpinHistory.CreateWin(
+                        wheel.Id,
+                        activeVersion.Id,
+                        selectedSegment.Id,
+                        originalEmail,
+                        normalizedEmail,
+                        prize.Id,
+                        allocatedKey?.Id,
+                        trimmedIdempotencyKey,
+                        receiptToken,
+                        now,
+                        now);
+
+                    if (allocatedKey != null && keyExpiresAtUtc.HasValue)
+                    {
+                        allocatedKey.Assign(winSpin.Id, now, keyExpiresAtUtc.Value);
+                    }
+
+                    var winnerLock = new WinnerLock(
+                        wheel.Id,
+                        normalizedEmail,
+                        winSpin.Id,
+                        allocatedKey?.Id,
+                        now);
+
+                    db.SpinHistories.Add(winSpin);
+                    db.WinnerLocks.Add(winnerLock);
+
+                    await SaveAndCommitAsync(tx, ct);
+
+                    return new SpinResultDto(
+                        winSpin.Id,
+                        winSpin.ReceiptToken,
+                        "Win",
+                        selectedSegment.Id,
+                        selectedSegment.DisplayOrder,
+                        "Chúc mừng bạn đã trúng thưởng",
+                        new SpinPrizeDto(
+                            prize.Id,
+                            prize.Name,
+                            prize.Description,
+                            plaintextKey,
+                            keyExpiresAtUtc),
+                        winSpin.CreatedAtUtc);
+                }
+            }
+
+            // Shared NoPrize path for both direct NoPrize draws and out-of-key fallbacks
+            var noPrizeSpin = SpinHistory.CreateNoPrize(
+                wheel.Id,
+                activeVersion.Id,
+                noPrizeSegment.Id,
+                originalEmail,
+                normalizedEmail,
+                trimmedIdempotencyKey,
+                receiptToken,
+                now,
+                now);
+
+            db.SpinHistories.Add(noPrizeSpin);
+            await SaveAndCommitAsync(tx, ct);
+
+            return new SpinResultDto(
+                noPrizeSpin.Id,
+                noPrizeSpin.ReceiptToken,
+                "NoPrize",
+                noPrizeSegment.Id,
+                noPrizeSegment.DisplayOrder,
+                "Chúc bạn may mắn lần sau",
+                null,
+                noPrizeSpin.CreatedAtUtc);
+        });
+    }
+
+    private static WheelVersionPrize ValidateAndGetNoPrizeSegment(
+        Guid wheelVersionId,
+        IReadOnlyList<WheelVersionPrize> segments)
+    {
+        if (segments.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Active wheel version {wheelVersionId} has no configured segments.");
+        }
+
+        long totalWeight = 0;
+        WheelVersionPrize? noPrizeSegment = null;
+        var noPrizeCount = 0;
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var segment = segments[i];
+            if (segment.ProbabilityWeight <= 0)
+            {
+                throw new InvalidOperationException(
+                    $"Active wheel version {wheelVersionId} segment {segment.Id} has non-positive weight {segment.ProbabilityWeight}.");
+            }
+
+            totalWeight += segment.ProbabilityWeight;
+
+            if (segment.IsNoPrize)
+            {
+                if (segment.PrizeId.HasValue)
+                {
+                    throw new InvalidOperationException(
+                        $"Active wheel version {wheelVersionId} NoPrize segment {segment.Id} must not reference a prize.");
                 }
 
-                var winnerLock = new WinnerLock(
-                    wheel.Id,
-                    normalizedEmail,
-                    spin.Id,
-                    allocatedKey?.Id,
-                    now);
-
-                db.SpinHistories.Add(spin);
-                db.WinnerLocks.Add(winnerLock);
-
-                await SaveAndCommitAsync(tx, ct);
-
-                return new SpinResultDto(
-                    spin.Id,
-                    spin.ReceiptToken,
-                    "Win",
-                    winningSegment.Id,
-                    winningSegment.DisplayOrder,
-                    "Chúc mừng bạn đã trúng thưởng",
-                    new SpinPrizeDto(
-                        prize.Id,
-                        prize.Name,
-                        prize.Description,
-                        plaintextKey,
-                        keyExpiresAtUtc),
-                    spin.CreatedAtUtc);
+                noPrizeSegment = segment;
+                noPrizeCount++;
             }
-        });
+            else if (!segment.PrizeId.HasValue)
+            {
+                throw new InvalidOperationException(
+                    $"Active wheel version {wheelVersionId} prize segment {segment.Id} is missing PrizeId.");
+            }
+        }
+
+        if (totalWeight != WeightedPrizeSelector.ExpectedTotalWeight)
+        {
+            throw new InvalidOperationException(
+                $"Active wheel version {wheelVersionId} total probability weight must equal {WeightedPrizeSelector.ExpectedTotalWeight}, but was {totalWeight}.");
+        }
+
+        if (noPrizeCount != 1 || noPrizeSegment == null)
+        {
+            throw new InvalidOperationException(
+                $"Active wheel version {wheelVersionId} must contain exactly one NoPrize segment, but found {noPrizeCount}.");
+        }
+
+        return noPrizeSegment;
+    }
+
+    private static void ValidateReferencedPrizes(
+        Guid wheelId,
+        Guid wheelVersionId,
+        IReadOnlyList<Guid> prizeIds,
+        IReadOnlyDictionary<Guid, Prize> prizes)
+    {
+        for (var i = 0; i < prizeIds.Count; i++)
+        {
+            var prizeId = prizeIds[i];
+            if (!prizes.TryGetValue(prizeId, out var prize) || !prize.IsEnabled || prize.WheelId != wheelId)
+            {
+                throw new InvalidOperationException(
+                    $"Active wheel version {wheelVersionId} references an invalid, disabled, or cross-wheel prize {prizeId}.");
+            }
+        }
+    }
+
+    private async Task<PrizeKey?> TryAllocateAvailableKeyAsync(Guid prizeId, CancellationToken ct)
+    {
+        // Atomic key allocation with SQL Server locking hints (UPDLOCK, READPAST, ROWLOCK)
+        if (db.Database.IsSqlServer())
+        {
+            return await db.PrizeKeys
+                .FromSqlRaw(
+                    "SELECT TOP (1) * FROM [PrizeKeys] WITH (UPDLOCK, READPAST, ROWLOCK) WHERE [PrizeId] = {0} AND [Status] = 'Available' ORDER BY [CreatedAtUtc] ASC",
+                    prizeId)
+                .SingleOrDefaultAsync(ct);
+        }
+
+        return await db.PrizeKeys
+            .Where(k => k.PrizeId == prizeId && k.Status == PrizeKeyStatus.Available)
+            .OrderBy(k => k.CreatedAtUtc)
+            .FirstOrDefaultAsync(ct);
     }
 
     private string GenerateReceiptToken()
