@@ -10,9 +10,10 @@
     - Khóa trúng thưởng `WinnerLock` theo cặp `(WheelId, EmailNormalized)`: người đã trúng giải (dù ở phiên bản nào) sẽ không được quay trúng thêm giải trên cùng một Wheel.
     - Thuật toán quay thưởng theo trọng số `WeightedPrizeSelector` sử dụng CSPRNG (`CryptoRandomNumberProvider` dựa trên `RandomNumberGenerator`), luôn bốc thăm trên toàn bộ phân khúc hợp lệ của phiên bản Active theo thang cố định `1,000,000` (không loại giải hết mã trước khi quay và không phân phối lại xác suất).
     - Phân bổ `PrizeKey` có điều kiện đồng thời cao: sử dụng SQL Server hint `UPDLOCK, READPAST, ROWLOCK` để chọn đúng 1 key `Available`, chuyển trạng thái sang `Assigned` và mã hóa/giải mã an toàn trong bộ nhớ; nếu giải được chọn không cấp được key `Available`, kết quả chuyển về luồng lưu/trả `NoPrize` dùng đúng phân khúc `NoPrize` của phiên bản đó (không tạo `WinnerLock`, không sửa key, trả HTTP 200).
-    - Idempotency & Replay: Lưu trữ `IdempotencyKey` trong bảng `SpinHistories`. Nếu người chơi gửi lại cùng `Idempotency-Key`, cùng `WheelId` và cùng `EmailNormalized` (bao gồm các biến thể cùng Gmail hợp lệ), hệ thống sẽ trả lại kết quả đã lưu (giải mã in-memory key nếu trúng) mà không tiêu tốn thêm key hay tạo lượt quay mới. Nếu tái sử dụng `Idempotency-Key` với tham số khác, trả về HTTP 409 `IDEMPOTENCY_KEY_REUSED`.
+    - Idempotency & Replay: Lưu trữ `IdempotencyKey` trong bảng `SpinHistories` (`IX_SpinHistories_IdempotencyKey` unique). Kiểm tra idempotency chạy ở đầu mỗi lần thử của `ExecutionStrategy` và được ưu tiên sau khi rollback mọi xung đột/trạng thái đóng trong transaction. Nếu người chơi gửi lại cùng `Idempotency-Key`, cùng `WheelId` và cùng `EmailNormalized` (bao gồm các biến thể cùng Gmail hợp lệ), hệ thống trả lại kết quả gốc đã lưu (kể cả khi Wheel đã đóng/vô hiệu hóa hoặc Gmail đã có `WinnerLock` active) mà không tiêu tốn thêm key hay tạo lượt quay mới. Nếu tái sử dụng `Idempotency-Key` với Wheel hoặc `EmailNormalized` khác, trả về HTTP 409 `IDEMPOTENCY_KEY_REUSED` và không làm rò rỉ dữ liệu gốc.
+    - Tính nguyên tử & đồng thời (Bước 3): Sử dụng row-level shared lock (`WITH (REPEATABLEREAD, ROWLOCK)`) trên `Wheels` và `WheelVersions` khi quay, phối hợp với `WITH (XLOCK, ROWLOCK)` trên `Wheels` ở `CloseVersionAsync`/`ActivateVersionAsync`; xác định điểm admission bằng thời gian UTC mới ngay sau khi lấy đủ khóa `Wheel`/`WheelVersion` và tính `AssignedAtUtc`/`ExpiresAtUtc` theo thời điểm gán key (giữ nguyên `AcceptedTermsAtUtc` tại thời điểm nhận/xác thực request); phân bổ key bằng `UPDLOCK, READPAST, ROWLOCK` trên `PrizeKeys`; rollback + dispose transaction lỗi và dọn sạch state cục bộ của attempt trước khi resolve lại idempotency hoặc rethrow cho `ExecutionStrategy`.
     - Rate Limiting tích hợp của ASP.NET Core (.NET 8 built-in `FixedWindowRateLimiter`) chống spam và bruteforce trên endpoint spin.
-    - Trạng thái Giai đoạn 8: Đang hoàn thiện theo từng bước (chưa đánh dấu `COMPLETED`; hành vi transaction/locking/race thực tế trên SQL Server cần được kiểm chứng riêng trên SQL Server).
+    - Trạng thái Giai đoạn 8: **Đang triển khai (IN PROGRESS — chưa đánh dấu `COMPLETED`)**. Đã hoàn thiện Bước 1 (chuẩn hóa Gmail), Bước 2 (thang `1,000,000` + fallback `NoPrize`), và Bước 3 (idempotency đồng thời + tính nguyên tử Spin); các bước/phần còn lại như cooldown hoặc kiểm tra đầy đủ toàn Giai đoạn 8 tiếp tục thực hiện theo lộ trình.
 
 ---
 
@@ -34,51 +35,44 @@ sequenceDiagram
 
     Engine->>Engine: Validate request (cú pháp & domain @gmail.com, safe key format, acceptedTerms == true)
 
-    Engine->>DB: Kiểm tra SpinHistory theo IdempotencyKey (Replay check)
-    alt Idempotency Replay
-        DB-->>Engine: Tìm thấy SpinHistory cũ
-        Engine->>Engine: Kiểm tra WheelId & EmailNormalized khớp nhau
-        Engine-->>Api: Trả về kết quả lượt quay cũ (Decrypt key in-memory nếu Win)
-        Api-->>Player: HTTP 200 SpinResultDto (Replay)
-    else New Spin Execution
-        Engine->>DB: Bắt đầu Transaction (ReadCommitted + ExecutionStrategy)
-        Engine->>DB: Kiểm tra Wheel (IsEnabled) & WheelVersion (Active & trong thời gian hiệu lực)
-        Engine->>DB: Kiểm tra WinnerLock(WheelId, EmailNormalized, IsActive == true)
-        alt Email đã từng trúng trên Wheel này
-            Engine-->>Api: Ném ConflictException("EMAIL_ALREADY_WON")
-            Api-->>Player: HTTP 409 EMAIL_ALREADY_WON
-        end
-
-        Engine->>DB: Lấy toàn bộ phân khúc của phiên bản Active và các Prize liên quan
-        Engine->>Engine: Xác minh cấu hình (trọng số dương, tổng = 1,000,000, đúng 1 NoPrize, Prize hợp lệ/enabled/cùng Wheel)
-        Engine->>Engine: Quay thưởng trên toàn bộ phân khúc theo trọng số (CSPRNG thang 1,000,000, không lọc theo tồn key)
-
-        alt Trúng ô có phần thưởng (RequiresKey = true)
-            Engine->>DB: SELECT TOP 1 FROM PrizeKeys WITH (UPDLOCK, READPAST, ROWLOCK) WHERE Status='Available'
-            alt Cấp được PrizeKey Available
-                Engine->>Engine: Giải mã key in-memory (Unprotect AES-256-GCM)
-                Engine->>DB: UPDATE PrizeKey (Status='Assigned', AssignedSpinId, ExpiresAtUtc)
-                Engine->>DB: INSERT SpinHistory (Result = Win, PrizeId, PrizeKeyId)
-                Engine->>DB: INSERT WinnerLock (WheelId, EmailNormalized, SpinId, PrizeKeyId)
-                Engine->>DB: COMMIT Transaction
-                Engine-->>Api: Trả kết quả Win kèm plaintext key
-            else Không còn PrizeKey Available (Fallback NoPrize)
-                Engine->>Engine: Ghi log chẩn đoán an toàn (chỉ ID & lý do NO_AVAILABLE_PRIZE_KEY)
-                Engine->>DB: INSERT SpinHistory (Result = NoPrize, WheelVersionPrizeId = NoPrizeSegment.Id, PrizeId = null, PrizeKeyId = null)
-                Engine->>DB: COMMIT Transaction
-                Engine-->>Api: Trả kết quả NoPrize theo phân khúc NoPrize
+    loop ExecutionStrategy (SqlServerRetryingExecutionStrategy)
+        Engine->>DB: TryResolveIdempotencyAsync (AsNoTracking, ưu tiên trước Wheel/Version/WinnerLock)
+        alt Tìm thấy SpinHistory cùng IdempotencyKey
+            alt Khớp WheelId & EmailNormalized
+                Engine-->>Api: Replay SpinResultDto gốc (Decrypt key in-memory nếu Win)
+            else Khác WheelId hoặc EmailNormalized
+                Engine-->>Api: Ném ConflictException("IDEMPOTENCY_KEY_REUSED")
             end
-        else Trúng ô có phần thưởng (RequiresKey = false)
-            Engine->>DB: INSERT SpinHistory (Result = Win, PrizeId, PrizeKeyId = null)
-            Engine->>DB: INSERT WinnerLock (WheelId, EmailNormalized, SpinId, PrizeKeyId = null)
-            Engine->>DB: COMMIT Transaction
-            Engine-->>Api: Trả kết quả Win (key = null)
-        else Trúng ô NoPrize trực tiếp
-            Engine->>DB: INSERT SpinHistory (Result = NoPrize, WheelVersionPrizeId = NoPrizeSegment.Id)
-            Engine->>DB: COMMIT Transaction
-            Engine-->>Api: Trả kết quả NoPrize
+        else Chưa có bản ghi committed
+            Engine->>DB: Bắt đầu Transaction (ReadCommitted)
+            Engine->>DB: Khóa shared row: Wheels & Active WheelVersion WITH (REPEATABLEREAD, ROWLOCK)
+            Engine->>Engine: Điểm admission: lấy UTC mới sau khi có đủ khóa và kiểm tra StartAtUtc <= admittedAtUtc <= EndAtUtc
+            Engine->>DB: Kiểm tra WinnerLock(WheelId, EmailNormalized, IsActive == true)
+            alt Wheel/Version không khả dụng (hoặc quá lịch), đã thắng, hoặc DbUpdateException (2601/2627)
+                Engine->>DB: Rollback & Dispose Transaction lỗi
+                Engine->>Engine: CleanupAttemptState (revert PrizeKey & detach entity của attempt)
+                Engine->>DB: Đọc lại TryResolveIdempotencyAsync ngoài transaction lỗi
+                alt Tìm thấy kết quả đã commit cùng key
+                    Engine-->>Api: Replay hoặc IDEMPOTENCY_KEY_REUSED
+                else Không có spin cùng key
+                    Engine-->>Api: WHEEL_NOT_AVAILABLE / EMAIL_ALREADY_WON / CONFLICT
+                end
+            else Hợp lệ -> Bốc thăm & lưu
+                Engine->>DB: WeightedPrizeSelector (thang 1,000,000)
+                alt Trúng giải RequiresKey = true
+                    Engine->>DB: SELECT TOP 1 FROM PrizeKeys WITH (UPDLOCK, READPAST, ROWLOCK)
+                    alt Cấp được PrizeKey Available
+                        Engine->>Engine: Unprotect key in-memory; lấy assignedAtUtc mới, tính ExpiresAtUtc từ assignedAtUtc; tạo Win Spin (giữ AcceptedTermsAtUtc gốc) + WinnerLock + Assign key
+                    else Hết key Available (Fallback NoPrize)
+                        Engine->>Engine: Tạo NoPrize Spin với NoPrizeSegment (không lock, không đổi key)
+                    end
+                else Giải RequiresKey = false hoặc trúng ô NoPrize
+                    Engine->>Engine: Tạo Win Spin + WinnerLock hoặc NoPrize Spin
+                end
+                Engine->>DB: SaveChangesAsync(acceptAllChangesOnSuccess: false) -> CommitAsync -> AcceptAllChanges()
+                Engine-->>Api: Trả HTTP 200 SpinResultDto
+            end
         end
-        Api-->>Player: HTTP 200 SpinResultDto
     end
 ```
 
@@ -131,18 +125,34 @@ sequenceDiagram
     - **Phân biệt hết key với lỗi thật:** Chỉ trường hợp không lấy được key `Available` mới fallback `NoPrize`. Lỗi SQL, timeout, lỗi giải mã key (`CryptographicException`) hoặc lỗi cấu hình đều lan truyền như lỗi thật và rollback transaction.
     - **Giới hạn hiện tại (`RequiresKey = false`):** Hệ thống chưa áp dụng kiểm soát tồn kho theo `TotalQuantity` cho các giải `RequiresKey = false`; hành vi này được giữ nguyên trong bước hiện tại.
 
-### 3.4 Concurrency & Tranh chấp khóa thưởng
+### 3.4 Concurrency, Idempotency đồng thời & Tính nguyên tử của Spin
 
-- Câu truy vấn phân bổ mã sử dụng locking hint mức dòng của SQL Server:
-    ```sql
-    SELECT TOP (1) * FROM [PrizeKeys] WITH (UPDLOCK, READPAST, ROWLOCK)
-    WHERE [PrizeId] = @prizeId AND [Status] = 'Available'
-    ORDER BY [CreatedAtUtc] ASC
-    ```
-
-    - `UPDLOCK`: Đặt update lock ngay khi đọc, ngăn chặn deadlocks khi nhiều luồng cùng đọc để cập nhật.
-    - `READPAST`: Bỏ qua các dòng đang bị khóa bởi transaction khác, tăng tối đa throughput cho hệ thống.
-    - `ROWLOCK`: Khóa ở cấp độ bản ghi thay vì cấp trang (page) hay cấp bảng (table).
+- **Lớp bảo vệ unique constraint của SQL Server (giữ nguyên schema hiện tại):**
+    - `IX_SpinHistories_IdempotencyKey` (`UNIQUE` trên `SpinHistories.IdempotencyKey`): đảm bảo tối đa 1 Spin cho mỗi `IdempotencyKey`.
+    - `IX_WinnerLocks_WheelId_EmailNormalized` (`UNIQUE` filtered `WHERE [IsActive] = 1`): đảm bảo tối đa 1 `WinnerLock` active cho mỗi `(WheelId, EmailNormalized)` trên một Wheel.
+    - `IX_SpinHistories_PrizeKeyId` (`UNIQUE` filtered `WHERE [PrizeKeyId] IS NOT NULL`) + `PrizeKeys.RowVersion`: đảm bảo một `PrizeKey` chỉ gán cho tối đa 1 Spin.
+    - `IX_SpinHistories_ReceiptToken` (`UNIQUE` trên `SpinHistories.ReceiptToken`).
+    - `IX_WheelVersions_WheelId` (`UNIQUE` filtered `WHERE [Status] = 'Active'`) + `WheelVersions.RowVersion`: đảm bảo tối đa 1 version `Active` cho mỗi Wheel.
+- **Điểm admission, phân tách mốc thời gian & phối hợp khóa giữa `SpinAsync` và Admin lifecycle:**
+    - Không dùng lock/semaphore trong bộ nhớ; mọi tranh chấp được phân xử qua transaction và row-level locks của SQL Server theo thứ tự khóa nhất quán `Wheels -> WheelVersions -> PrizeKeys -> SpinHistories -> WinnerLocks` nhằm **giảm nguy cơ** xung đột vòng khóa/deadlock (không cam kết loại trừ tuyệt đối deadlock dưới mọi kế hoạch thực thi của SQL Server; nếu SQL Server vẫn trả deadlock `1205` hoặc lỗi tạm thời, transaction sẽ rollback/dọn state cục bộ và được `SqlServerRetryingExecutionStrategy` retry an toàn kèm `TryResolveIdempotencyAsync`).
+    - Trong `SpinAsync`, hệ thống lấy khóa shared mức dòng trên `Wheels` (`WITH (REPEATABLEREAD, ROWLOCK)`) và bản ghi `WheelVersions` có `Status = 'Active'` (`WITH (REPEATABLEREAD, ROWLOCK)`). **Điểm admission** nằm ngay sau khi cả hai khóa `Wheel` và `WheelVersion` đã được giữ: hệ thống đọc mốc thời gian UTC mới (`admittedAtUtc = clock.UtcNow.UtcDateTime`) để kiểm tra `StartAtUtc <= admittedAtUtc <= EndAtUtc`. Nếu request đã chờ khóa qua quá hạn lịch hoạt động, transaction được rollback/dispose và ưu tiên gọi `TryResolveIdempotencyAsync` trước khi trả `WHEEL_NOT_AVAILABLE`.
+    - Các mốc thời gian được tách bạch rõ ràng: `AcceptedTermsAtUtc` ghi nhận tại thời điểm request vượt qua bước validate điều khoản (không bị dịch chuyển tùy tiện do chờ khóa hoặc retry); `admittedAtUtc` dùng cho kiểm tra lịch hoạt động tại điểm admission; `AssignedAtUtc` và `ExpiresAtUtc` (`assignedAtUtc + ClaimDurationMinutes`) được tính theo thời điểm gán key sau khi cấp phát `PrizeKey` thành công để không làm rút ngắn thời hạn nhận thưởng do chờ khóa trước đó.
+    - Các lượt quay công khai đồng thời giữ khóa `S` tương thích lẫn nhau nên không chặn nhau, đồng thời tuần tự hóa an toàn với việc Admin khóa/disable `Wheel` (`X` lock trên `Wheels`) và `CloseVersionAsync`/`ActivateVersionAsync` (khóa `WITH (XLOCK, ROWLOCK)` trên `Wheels` ngay đầu transaction admin).
+    - Câu truy vấn phân bổ mã sử dụng locking hint mức dòng của SQL Server:
+      ```sql
+      SELECT TOP (1) * FROM [PrizeKeys] WITH (UPDLOCK, READPAST, ROWLOCK)
+      WHERE [PrizeId] = @prizeId AND [Status] = 'Available'
+      ORDER BY [CreatedAtUtc] ASC
+      ```
+        - `UPDLOCK`: Đặt update lock ngay khi đọc, giảm nguy cơ deadlock khi nhiều luồng cùng đọc rồi nâng cấp khóa để cập nhật.
+        - `READPAST`: Bỏ qua dòng đang bị transaction khác khóa giữ, nên khi 2 request cùng tranh key cuối, một request giữ khóa và request còn lại nhận `null` để fallback `NoPrize` ngay theo quy tắc Bước 2.
+        - `ROWLOCK`: Khóa ở cấp bản ghi thay vì page/table.
+- **Xử lý rollback, cô lập `ChangeTracker` và retry của `ExecutionStrategy`:**
+    - Sử dụng `SaveChangesAsync(acceptAllChangesOnSuccess: false)` + `CommitAsync` + `ChangeTracker.AcceptAllChanges()` để giữ nguyên `OriginalValues` của `PrizeKey` nếu `CommitAsync` gặp lỗi.
+    - Mọi truy vấn đọc trạng thái đều dùng `AsNoTracking()`; khi thất bại hoặc va chạm, `CleanupAttemptState` chỉ khôi phục `OriginalValues` của `allocatedKey` (nếu `Modified`) và detach 3 entity cục bộ của attempt (`allocatedKey`, `pendingSpin`, `pendingWinnerLock`) mà **không** gọi `ChangeTracker.Clear()`, giữ nguyên các entity ngoài operation nếu có.
+    - Chỉ phân loại `DbUpdateException` khi inner `SqlException` có mã `2601` hoặc `2627` khớp đúng tên index (`IX_SpinHistories_IdempotencyKey`, `IX_WinnerLocks_WheelId_EmailNormalized`, `IX_SpinHistories_PrizeKeyId`, `IX_SpinHistories_ReceiptToken`); mọi lỗi SQL/EF khác (`DbUpdateConcurrencyException`, check/FK error, timeout, transient error) đều rollback, dọn state và lan truyền đúng nguyên bản để `ExecutionStrategy` retry hoặc trả lỗi 5xx.
+    - Sau khi rollback & đóng transaction lỗi hoàn toàn, hệ thống luôn đọc lại `TryResolveIdempotencyAsync` bằng trạng thái sạch trước khi kết luận `WHEEL_NOT_AVAILABLE` hoặc `EMAIL_ALREADY_WON` — đảm bảo replay luôn được ưu tiên ngay cả khi `WinnerLock` hoặc việc đóng Wheel diễn ra trước khi request thứ hai chạm tới `IX_SpinHistories_IdempotencyKey`.
+    - Khi rớt kết nối ngay sau commit (`commit-confirmation failure`), lần retry tiếp theo của `SqlServerRetryingExecutionStrategy` chạy `TryResolveIdempotencyAsync` ở đầu attempt mới và replay đúng kết quả đã commit mà không tạo bản ghi trùng.
 
 ---
 

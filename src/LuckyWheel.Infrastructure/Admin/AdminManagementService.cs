@@ -138,7 +138,9 @@ public sealed class AdminManagementService(ApplicationDbContext db, IClock clock
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
+            var wheelIdForLock = await GetWheelIdForVersionLockAsync(versionId, ct);
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            await AcquireWheelExclusiveLockAsync(wheelIdForLock, ct);
             var version = await db.WheelVersions.SingleOrDefaultAsync(x => x.Id == versionId, ct)
                 ?? throw new NotFoundException("WheelVersion", versionId.ToString());
 
@@ -187,7 +189,9 @@ public sealed class AdminManagementService(ApplicationDbContext db, IClock clock
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
+            var wheelIdForLock = await GetWheelIdForVersionLockAsync(versionId, ct);
             await using var tx = await db.Database.BeginTransactionAsync(ct);
+            await AcquireWheelExclusiveLockAsync(wheelIdForLock, ct);
             var version = await db.WheelVersions.SingleOrDefaultAsync(x => x.Id == versionId, ct)
                 ?? throw new NotFoundException("WheelVersion", versionId.ToString());
 
@@ -256,6 +260,31 @@ public sealed class AdminManagementService(ApplicationDbContext db, IClock clock
     }
 
     private DateTime Now => clock.UtcNow.UtcDateTime;
+
+    private async Task<Guid?> GetWheelIdForVersionLockAsync(Guid versionId, CancellationToken ct)
+    {
+        if (!db.Database.IsSqlServer())
+        {
+            return null;
+        }
+
+        return await db.WheelVersions.AsNoTracking()
+            .Where(x => x.Id == versionId)
+            .Select(x => (Guid?)x.WheelId)
+            .SingleOrDefaultAsync(ct);
+    }
+
+    private async Task AcquireWheelExclusiveLockAsync(Guid? wheelId, CancellationToken ct)
+    {
+        if (!wheelId.HasValue || !db.Database.IsSqlServer())
+        {
+            return;
+        }
+
+        await db.Database
+            .SqlQuery<bool>($"SELECT [IsEnabled] AS [Value] FROM [Wheels] WITH (XLOCK, ROWLOCK) WHERE [Id] = {wheelId.Value}")
+            .FirstOrDefaultAsync(ct);
+    }
     private void Audit(AuditAction action, string type, Guid id, string description)
     {
         var adminId = adminContext.AdminId;
