@@ -348,4 +348,307 @@ public sealed class PublicWheelServiceTests
         Assert.Equal("NoPrize", response.Result);
         Assert.Equal(noPrizeSeg.Id, response.EntryId);
     }
+
+    [Fact]
+    public async Task SpinAsync_WinWithGmailVariant_PreservesEmailOriginalAndNormalizesIdentity()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 500k", null, null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var protectedKey = _protector.Protect("LW-AAAA-BBBB-CCCC-0001");
+        var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
+        db.PrizeKeys.Add(prizeKey);
+
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
+        db.WheelVersionPrizes.Add(prizeSeg);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var response = await service.SpinAsync(
+            "lucky-wheel",
+            "idemp-variant-win",
+            new SpinRequest("  Quang.Dev+campaign@Gmail.COM  ", true));
+
+        Assert.Equal("Win", response.Result);
+
+        var history = await db.SpinHistories.SingleAsync(x => x.Id == response.SpinId);
+        Assert.Equal("Quang.Dev+campaign@Gmail.COM", history.EmailOriginal);
+        Assert.Equal("quangdev@gmail.com", history.EmailNormalized);
+
+        var winnerLock = await db.WinnerLocks.SingleAsync(x => x.WheelId == wheel.Id);
+        Assert.Equal("quangdev@gmail.com", winnerLock.EmailNormalized);
+        Assert.True(winnerLock.IsActive);
+    }
+
+    [Theory]
+    [InlineData("quangdev@gmail.com")]
+    [InlineData("q.u.a.n.g.d.e.v@gmail.com")]
+    [InlineData("QUANGDEV+other@GMAIL.COM")]
+    [InlineData("  quang.dev+promo.2026@gmail.com  ")]
+    public async Task SpinAsync_SameGmailVariantsAfterWin_BlockedByWinnerLock(string variantEmail)
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 100k", null, null, false, 10, _now);
+        db.Prizes.Add(prize);
+
+        var prizeSeg = new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now);
+        db.WheelVersionPrizes.Add(prizeSeg);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        // First spin wins using dotted +tag variant
+        await service.SpinAsync("lucky-wheel", "idemp-first-win", new SpinRequest("Quang.Dev+campaign@gmail.com", true));
+
+        // Subsequent spin using another variant of the same Gmail must fail with EMAIL_ALREADY_WON
+        var ex = await Assert.ThrowsAsync<ConflictException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-second-attempt", new SpinRequest(variantEmail, true)));
+
+        Assert.Equal("EMAIL_ALREADY_WON", ex.Code);
+        Assert.Equal(1, await db.SpinHistories.CountAsync());
+        Assert.Equal(1, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_SameGmailVariantAcrossVersionsAndWheels_RemainsLockedInSameWheelAndAllowedInDifferentWheel()
+    {
+        using var db = CreateContext();
+        var wheelA = new Wheel("Wheel A", "wheel-a", null, "Terms", _now);
+        var wheelB = new Wheel("Wheel B", "wheel-b", null, "Terms", _now);
+        db.Wheels.AddRange(wheelA, wheelB);
+
+        var versionA1 = new WheelVersion(wheelA.Id, 1, _now.AddDays(-2), _now.AddDays(7), 60, _now);
+        versionA1.Activate(Guid.NewGuid(), _now);
+        var versionB1 = new WheelVersion(wheelB.Id, 1, _now.AddDays(-2), _now.AddDays(7), 60, _now);
+        versionB1.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.AddRange(versionA1, versionB1);
+
+        var prizeA = new Prize(wheelA.Id, "Gift A", null, null, false, 10, _now);
+        var prizeB = new Prize(wheelB.Id, "Gift B", null, null, false, 10, _now);
+        db.Prizes.AddRange(prizeA, prizeB);
+
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionA1.Id, prizeA.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionB1.Id, prizeB.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        // Win on Wheel A Version 1
+        await service.SpinAsync("wheel-a", "idemp-wa-v1", new SpinRequest("Quang.Dev+v1@gmail.com", true));
+
+        // Close Version 1 and activate Version 2 on Wheel A
+        versionA1.Close(_now);
+        var versionA2 = new WheelVersion(wheelA.Id, 2, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        versionA2.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(versionA2);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(versionA2.Id, prizeA.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        await db.SaveChangesAsync();
+
+        // Variant must still be locked on Wheel A Version 2
+        var ex = await Assert.ThrowsAsync<ConflictException>(() =>
+            service.SpinAsync("wheel-a", "idemp-wa-v2", new SpinRequest("quangdev@gmail.com", true)));
+        Assert.Equal("EMAIL_ALREADY_WON", ex.Code);
+
+        // Variant must be allowed on Wheel B
+        var wheelBResult = await service.SpinAsync("wheel-b", "idemp-wb-v1", new SpinRequest("q.u.a.n.g.d.e.v+wb@GMAIL.COM", true));
+        Assert.Equal("Win", wheelBResult.Result);
+    }
+
+    [Fact]
+    public async Task SpinAsync_NoPrizeWithGmailVariants_DoesNotLockAndPreservesEachEmailOriginal()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, null, 1_000_000, 1, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var spin1 = await service.SpinAsync("lucky-wheel", "idemp-np-1", new SpinRequest("Quang.Dev+one@gmail.com", true));
+        var spin2 = await service.SpinAsync("lucky-wheel", "idemp-np-2", new SpinRequest("quangdev+two@GMAIL.COM", true));
+
+        Assert.Equal("NoPrize", spin1.Result);
+        Assert.Equal("NoPrize", spin2.Result);
+        Assert.False(await db.WinnerLocks.AnyAsync());
+
+        var h1 = await db.SpinHistories.SingleAsync(x => x.Id == spin1.SpinId);
+        var h2 = await db.SpinHistories.SingleAsync(x => x.Id == spin2.SpinId);
+        Assert.Equal("Quang.Dev+one@gmail.com", h1.EmailOriginal);
+        Assert.Equal("quangdev@gmail.com", h1.EmailNormalized);
+        Assert.Equal("quangdev+two@GMAIL.COM", h2.EmailOriginal);
+        Assert.Equal("quangdev@gmail.com", h2.EmailNormalized);
+    }
+
+    [Fact]
+    public async Task SpinAsync_ReplaySameKeyWithSameGmailVariant_ReturnsOriginalOutcomeWithoutDuplicate()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 100k", null, null, true, 10, _now);
+        db.Prizes.Add(prize);
+
+        var protectedKey = _protector.Protect("LW-9999-8888-7777-6666");
+        var prizeKey = new PrizeKey(prize.Id, protectedKey.CodeHash, protectedKey.EncryptedCode, protectedKey.EncryptionNonce, protectedKey.EncryptionTag, _now);
+        db.PrizeKeys.Add(prizeKey);
+
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var response1 = await service.SpinAsync("lucky-wheel", "idemp-variant-replay", new SpinRequest("Quang.Dev+first@gmail.com", true));
+        var response2 = await service.SpinAsync("lucky-wheel", "idemp-variant-replay", new SpinRequest("  q.u.a.n.g.d.e.v+retry@GMAIL.COM  ", true));
+
+        Assert.Equal(response1.SpinId, response2.SpinId);
+        Assert.Equal(response1.ReceiptToken, response2.ReceiptToken);
+        Assert.Equal(response1.Prize?.Key, response2.Prize?.Key);
+        Assert.Equal(1, await db.SpinHistories.CountAsync());
+
+        var storedSpin = await db.SpinHistories.SingleAsync();
+        Assert.Equal("Quang.Dev+first@gmail.com", storedSpin.EmailOriginal);
+        Assert.Equal("quangdev@gmail.com", storedSpin.EmailNormalized);
+    }
+
+    [Theory]
+    [InlineData(".user@gmail.com")]
+    [InlineData("user.@gmail.com")]
+    [InlineData("user..name@gmail.com")]
+    [InlineData("+tag@gmail.com")]
+    [InlineData("user+@gmail.com")]
+    [InlineData("user@googlemail.com")]
+    [InlineData("user@yahoo.com")]
+    [InlineData("\u212A@gmail.com")]
+    [InlineData("user\u200B@gmail.com")]
+    public async Task SpinAsync_InvalidGmail_ThrowsValidationExceptionWithoutSavingSpin(string invalidEmail)
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, null, 1_000_000, 1, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var ex = await Assert.ThrowsAsync<ValidationException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-invalid-email", new SpinRequest(invalidEmail, true)));
+
+        Assert.True(ex.Errors.ContainsKey("email"));
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+        Assert.Equal(0, await db.WinnerLocks.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_ReplaySameKeyWithDifferentNormalizedGmail_ThrowsIdempotencyKeyReused()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, null, 1_000_000, 1, "#CCCCCC", null, true, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await service.SpinAsync("lucky-wheel", "idemp-diff-norm", new SpinRequest("quang.dev+1@gmail.com", true));
+
+        var ex = await Assert.ThrowsAsync<ConflictException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-diff-norm", new SpinRequest("quang_dev@gmail.com", true)));
+
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", ex.Code);
+        Assert.Equal(1, await db.SpinHistories.CountAsync());
+    }
+
+    [Fact]
+    public async Task SpinAsync_UnlockedWinnerLock_AllowsAnotherGmailVariantToSpinAndRelock()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+
+        var prize = new Prize(wheel.Id, "Voucher 100k", null, null, false, 10, _now);
+        db.Prizes.Add(prize);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, prize.Id, 1_000_000, 1, "#FFAA00", null, false, _now));
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        await service.SpinAsync("lucky-wheel", "idemp-unlock-1", new SpinRequest("Quang.Dev+first@gmail.com", true));
+
+        var existingLock = await db.WinnerLocks.SingleAsync(x => x.WheelId == wheel.Id && x.IsActive);
+        existingLock.Unlock(Guid.NewGuid(), _now.AddMinutes(5));
+        await db.SaveChangesAsync();
+
+        var secondWin = await service.SpinAsync("lucky-wheel", "idemp-unlock-2", new SpinRequest("q.u.a.n.g.d.e.v+second@GMAIL.COM", true));
+        Assert.Equal("Win", secondWin.Result);
+        Assert.Equal(1, await db.WinnerLocks.CountAsync(x => x.WheelId == wheel.Id && x.IsActive));
+
+        var blockedThird = await Assert.ThrowsAsync<ConflictException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-unlock-3", new SpinRequest("quangdev@gmail.com", true)));
+        Assert.Equal("EMAIL_ALREADY_WON", blockedThird.Code);
+    }
+
+    [Fact]
+    public async Task SpinAsync_BlockedWinnerLock_BlocksAllVariantsOfSameGmail()
+    {
+        using var db = CreateContext();
+        var wheel = new Wheel("Lucky Wheel", "lucky-wheel", "Description", "Terms", _now);
+        db.Wheels.Add(wheel);
+
+        var version = new WheelVersion(wheel.Id, 1, _now.AddDays(-1), _now.AddDays(7), 60, _now);
+        version.Activate(Guid.NewGuid(), _now);
+        db.WheelVersions.Add(version);
+        db.WheelVersionPrizes.Add(new WheelVersionPrize(version.Id, null, 1_000_000, 1, "#CCCCCC", null, true, _now));
+
+        var blockedLock = new WinnerLock(wheel.Id, "quangdev@gmail.com", Guid.NewGuid(), null, _now);
+        blockedLock.Block("Suspected abuse", _now);
+        db.WinnerLocks.Add(blockedLock);
+        await db.SaveChangesAsync();
+
+        var service = new PublicWheelService(db, new WeightedPrizeSelector(new FixedRandomProvider(0)), new FixedRandomProvider(0), _protector, _clock);
+
+        var ex = await Assert.ThrowsAsync<ConflictException>(() =>
+            service.SpinAsync("lucky-wheel", "idemp-blocked-variant", new SpinRequest("  Quang.Dev+alias@GMAIL.COM  ", true)));
+
+        Assert.Equal("EMAIL_ALREADY_WON", ex.Code);
+        Assert.Equal(0, await db.SpinHistories.CountAsync());
+    }
 }

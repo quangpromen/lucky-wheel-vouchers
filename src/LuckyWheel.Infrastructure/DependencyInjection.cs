@@ -38,6 +38,11 @@ public static class DependencyInjection
         services.AddSingleton<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyProtector, PrizeKeys.AesGcmPrizeKeyProtector>();
         services.AddScoped<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyService, PrizeKeys.PrizeKeyService>();
 
+        // ── PrizeKey Expiration Worker (Stage 9) ───────────────────────────
+        services.Configure<PrizeKeys.PrizeKeyExpirationOptions>(configuration.GetSection(PrizeKeys.PrizeKeyExpirationOptions.SectionName));
+        services.AddScoped<LuckyWheel.Application.Features.Admin.PrizeKeys.IPrizeKeyExpirationProcessor, PrizeKeys.PrizeKeyExpirationProcessor>();
+        services.AddHostedService<PrizeKeys.PrizeKeyExpirationBackgroundService>();
+
         // ── Public Wheel & Spin Engine (Stage 8) ───────────────────────────
         services.AddSingleton<LuckyWheel.Application.Features.Public.IRandomNumberProvider, Public.CryptoRandomNumberProvider>();
         services.AddScoped<LuckyWheel.Application.Features.Public.IWeightedPrizeSelector, Public.WeightedPrizeSelector>();

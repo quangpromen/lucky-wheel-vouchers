@@ -263,5 +263,25 @@ public sealed class AdminStage7TestFactory : WebApplicationFactory<Program>
         {
             return Task.FromResult(new PrizeKeyDto(prizeKeyId, Guid.NewGuid(), "Voucher 100k", "LW-TEST-1234-5678-ABCD", "Available", DateTime.UtcNow, null, null, null, null, null));
         }
+
+        public Task<RedeemPrizeKeyResponse> RedeemKeyAsync(Guid prizeKeyId, RedeemPrizeKeyRequest request, System.Threading.CancellationToken ct = default)
+        {
+            return Task.FromResult(new RedeemPrizeKeyResponse(prizeKeyId, Guid.NewGuid(), "Redeemed", DateTime.UtcNow, request?.Note));
+        }
+
+        public Task<CancelPrizeKeyResponse> CancelKeyAsync(Guid prizeKeyId, CancelPrizeKeyRequest request, System.Threading.CancellationToken ct = default)
+        {
+            return Task.FromResult(new CancelPrizeKeyResponse(prizeKeyId, Guid.NewGuid(), "Cancelled", DateTime.UtcNow, request?.Reason ?? ""));
+        }
+
+        public Task<CreateReplacementPrizeKeyResponse> CreateReplacementKeyAsync(Guid prizeKeyId, System.Threading.CancellationToken ct = default)
+        {
+            return Task.FromResult(new CreateReplacementPrizeKeyResponse(Guid.NewGuid(), prizeKeyId, Guid.NewGuid(), Guid.NewGuid(), "Assigned", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), "LW-REPL-1234-5678-ABCD"));
+        }
+
+        public Task<PageResult<AdminSpinHistoryDto>> GetWheelSpinsAsync(Guid wheelId, AdminSpinHistoryFilter filter, System.Threading.CancellationToken ct = default)
+        {
+            return Task.FromResult(new PageResult<AdminSpinHistoryDto>([], filter.PageNumber, filter.PageSize, 0));
+        }
     }
 }

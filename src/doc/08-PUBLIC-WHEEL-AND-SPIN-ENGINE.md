@@ -6,11 +6,11 @@
 - **Phạm vi đã thực hiện:**
   - `GET /api/public/wheels/{slug}`: Lấy thông tin vòng quay active theo slug (chỉ trả label, color, imageUrl, displayOrder, isNoPrize; tuyệt đối không để lộ weight, tổng số key còn lại, hoặc dữ liệu nhạy cảm).
   - `POST /api/public/wheels/{slug}/spins`: API quay thưởng công khai với header `Idempotency-Key` và payload `{ email, acceptedTerms }`.
-  - Quy tắc xác thực và chuẩn hóa Gmail nghiêm ngặt: email phải kết thúc bằng `@gmail.com`, chuẩn hóa `Trim().ToLowerInvariant()`, giữ nguyên dấu chấm và `+alias` (không bỏ dấu chấm, không bỏ alias).
+  - Quy tắc xác thực và chuẩn hóa Gmail theo `LUCKY_WHEEL_BUSINESS_RULES.md` (§8): kiểm tra Gmail hợp lệ trước khi chuẩn hóa, trim whitespace, lowercase, chỉ chấp nhận domain `@gmail.com`, loại bỏ phần `+tag` và dấu chấm (`.`) trong local part; lưu `EmailOriginal` cho lịch sử và dùng `EmailNormalized` cho eligibility, `WinnerLock` và so sánh idempotency.
   - Khóa trúng thưởng `WinnerLock` theo cặp `(WheelId, EmailNormalized)`: người đã trúng giải (dù ở phiên bản nào) sẽ không được quay trúng thêm giải trên cùng một Wheel.
   - Thuật toán quay thưởng theo trọng số `WeightedPrizeSelector` sử dụng CSPRNG (`CryptoRandomNumberProvider` dựa trên `RandomNumberGenerator`).
   - Phân bổ `PrizeKey` có điều kiện đồng thời cao: sử dụng SQL Server hint `UPDLOCK, READPAST, ROWLOCK` để chọn đúng 1 key `Available`, chuyển trạng thái sang `Assigned` và mã hóa/giải mã an toàn trong bộ nhớ.
-  - Idempotency & Replay: Lưu trữ `IdempotencyKey` trong bảng `SpinHistories`. Nếu người chơi gửi lại cùng `Idempotency-Key`, cùng `WheelId` và cùng `Email`, hệ thống sẽ trả lại kết quả đã lưu (giải mã in-memory key nếu trúng) mà không tiêu tốn thêm key hay tạo lượt quay mới. Nếu tái sử dụng `Idempotency-Key` với tham số khác, trả về HTTP 409 `IDEMPOTENCY_KEY_REUSED`.
+  - Idempotency & Replay: Lưu trữ `IdempotencyKey` trong bảng `SpinHistories`. Nếu người chơi gửi lại cùng `Idempotency-Key`, cùng `WheelId` và cùng `EmailNormalized` (bao gồm các biến thể cùng Gmail hợp lệ), hệ thống sẽ trả lại kết quả đã lưu (giải mã in-memory key nếu trúng) mà không tiêu tốn thêm key hay tạo lượt quay mới. Nếu tái sử dụng `Idempotency-Key` với tham số khác, trả về HTTP 409 `IDEMPOTENCY_KEY_REUSED`.
   - Rate Limiting tích hợp của ASP.NET Core (.NET 8 built-in `FixedWindowRateLimiter`) chống spam và bruteforce trên endpoint spin.
   - Toàn bộ 162 unit test và 58 integration test tự động đều vượt qua 100%.
 
@@ -32,7 +32,7 @@ sequenceDiagram
     Limiter-->>Api: Cho phép (hoặc 429 TOO_MANY_REQUESTS)
     Api->>Engine: SpinAsync(slug, idempotencyKey, request)
     
-    Engine->>Engine: Validate request (Gmail regex, safe key format, acceptedTerms == true)
+    Engine->>Engine: Validate request (cú pháp & domain @gmail.com, safe key format, acceptedTerms == true)
     
     Engine->>DB: Kiểm tra SpinHistory theo IdempotencyKey (Replay check)
     alt Idempotency Replay
@@ -80,9 +80,15 @@ sequenceDiagram
 ## 3. Các quy tắc nghiệp vụ cốt lõi
 
 ### 3.1 Quy tắc Gmail
-- Email người chơi phải có đuôi `@gmail.com` (không chấp nhận domain khác như `yahoo.com`, `gmail.com.vn`).
-- Chuẩn hóa: `email.Trim().ToLowerInvariant()`.
-- **Bảo toàn nguyên dạng:** Không bỏ dấu chấm trong username (ví dụ: `quang.dev@gmail.com` khác `quangdev@gmail.com`), không loại bỏ `+alias` (`user+promo@gmail.com`).
+- Email người chơi phải là địa chỉ Gmail hợp lệ trước khi chuẩn hóa và chỉ chấp nhận domain `@gmail.com` (không chấp nhận domain khác như `yahoo.com`, `gmail.com.vn`, `googlemail.com`, hay local part sai cú pháp như dấu chấm ở đầu/cuối, `..`, thiếu phần chính trước `+`, hoặc `+` rỗng).
+- Chuẩn hóa theo `LUCKY_WHEEL_BUSINESS_RULES.md` (§8):
+  1. Trim khoảng trắng đầu/cuối.
+  2. Chuyển về chữ thường (`ToLowerInvariant()`).
+  3. Kiểm tra cú pháp local part và domain `@gmail.com`.
+  4. Loại bỏ phần `+tag` trong local part.
+  5. Loại bỏ dấu chấm (`.`) trong local part.
+- Ví dụ: `Quang.Dev+campaign@gmail.com` và `quangdev@gmail.com` cùng chuẩn hóa thành `quangdev@gmail.com`.
+- Lưu `EmailOriginal` (đã trim) để phục vụ lịch sử/hiển thị admin; dùng `EmailNormalized` cho eligibility, `WinnerLock` và so sánh request idempotency.
 
 ### 3.2 Quy tắc Khóa trúng thưởng (WinnerLock)
 - Phạm vi khóa: `(WheelId, EmailNormalized)`.

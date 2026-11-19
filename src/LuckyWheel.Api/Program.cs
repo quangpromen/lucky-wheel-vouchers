@@ -15,6 +15,20 @@ using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── CORS Policy ───────────────────────────────────────────────────────────────
+const string FrontendCorsPolicy = "AllowFrontend";
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(FrontendCorsPolicy, policy =>
+    {
+        policy.WithOrigins("http://localhost:5173")
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
+
+
 // ── MVC / JSON ────────────────────────────────────────────────────────────────
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -192,8 +206,15 @@ app.UseExceptionHandler();
 // 2. Correlation id — sets X-Correlation-ID on every request/response
 app.UseMiddleware<CorrelationIdMiddleware>();
 
-// 3. HTTPS redirect
-app.UseHttpsRedirection();
+// ── THÊM DÒNG NÀY:
+app.UseCors(FrontendCorsPolicy);
+
+// 3. HTTPS redirect (bọc lại để dev local không bị ép sang https)
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
 
 // 4. Swagger (Development only)
 if (app.Environment.IsDevelopment())

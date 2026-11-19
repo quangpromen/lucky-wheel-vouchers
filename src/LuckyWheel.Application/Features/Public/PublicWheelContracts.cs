@@ -67,19 +67,26 @@ public interface IRandomNumberProvider
 
 public static class PublicSpinValidation
 {
+    private const string AcceptedGmailDomain = "gmail.com";
+    private const int MaxEmailLength = 320;
+    private const int MaxLocalPartLength = 64;
+
     private static readonly Regex SafeIdempotencyKeyRegex = new(
         @"^[a-zA-Z0-9\-_.]+$",
         RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(100));
 
-    private static readonly Regex EmailFormatRegex = new(
-        @"^[^@\s]+@gmail\.com$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase,
-        TimeSpan.FromMilliseconds(100));
+    public static bool TryNormalizeEmail(string? rawEmail, out string normalizedEmail)
+        => TryNormalizeEmailCore(rawEmail, out normalizedEmail, out _);
 
     public static string NormalizeEmail(string rawEmail)
     {
-        return rawEmail.Trim().ToLowerInvariant();
+        if (!TryNormalizeEmailCore(rawEmail, out var normalizedEmail, out var errorMessage))
+        {
+            throw new ValidationException("email", errorMessage);
+        }
+
+        return normalizedEmail;
     }
 
     public static void ValidateSpinRequest(string? idempotencyKey, SpinRequest request)
@@ -108,26 +115,14 @@ public static class PublicSpinValidation
             }
         }
 
-        // 2. Email validation
-        if (string.IsNullOrWhiteSpace(request.Email))
+        // 2. Email validation (validate Gmail syntax and accepted domain before normalization)
+        if (!TryNormalizeEmailCore(request?.Email, out _, out var emailError))
         {
-            errors["email"] = ["Email is required."];
-        }
-        else
-        {
-            var trimmedEmail = request.Email.Trim();
-            if (trimmedEmail.Length > 320)
-            {
-                errors["email"] = ["Email must not exceed 320 characters."];
-            }
-            else if (!EmailFormatRegex.IsMatch(trimmedEmail))
-            {
-                errors["email"] = ["Email must be a valid @gmail.com address."];
-            }
+            errors["email"] = [emailError];
         }
 
         // 3. AcceptedTerms validation
-        if (request.AcceptedTerms != true)
+        if (request?.AcceptedTerms != true)
         {
             errors["acceptedTerms"] = ["You must accept the terms and conditions to spin."];
         }
@@ -136,5 +131,133 @@ public static class PublicSpinValidation
         {
             throw new ValidationException(errors);
         }
+    }
+
+    private static bool TryNormalizeEmailCore(string? rawEmail, out string normalizedEmail, out string errorMessage)
+    {
+        normalizedEmail = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(rawEmail))
+        {
+            errorMessage = "Email is required.";
+            return false;
+        }
+
+        var trimmedEmail = rawEmail.Trim();
+        if (trimmedEmail.Length > MaxEmailLength)
+        {
+            errorMessage = "Email must not exceed 320 characters.";
+            return false;
+        }
+
+        foreach (var ch in trimmedEmail)
+        {
+            if (!char.IsAscii(ch) || char.IsWhiteSpace(ch) || char.IsControl(ch))
+            {
+                errorMessage = "Email must be a valid @gmail.com address.";
+                return false;
+            }
+        }
+
+        var lowerEmail = trimmedEmail.ToLowerInvariant();
+
+        var atIndex = lowerEmail.IndexOf('@');
+        if (atIndex <= 0 || atIndex != lowerEmail.LastIndexOf('@'))
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        var localPart = lowerEmail[..atIndex];
+        var domainPart = lowerEmail[(atIndex + 1)..];
+
+        if (!string.Equals(domainPart, AcceptedGmailDomain, StringComparison.Ordinal))
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        if (localPart.Length > MaxLocalPartLength)
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        var plusIndex = localPart.IndexOf('+');
+        if (plusIndex == 0)
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        var basePart = plusIndex >= 0 ? localPart[..plusIndex] : localPart;
+        var tagPart = plusIndex >= 0 ? localPart[(plusIndex + 1)..] : null;
+
+        if (!IsValidGmailSegments(basePart, allowPlusSeparator: false))
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        if (tagPart is not null && !IsValidGmailSegments(tagPart, allowPlusSeparator: true))
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        var normalizedLocal = basePart.Replace(".", string.Empty, StringComparison.Ordinal);
+        if (string.IsNullOrEmpty(normalizedLocal) || !ContainsAsciiLetterOrDigit(normalizedLocal))
+        {
+            errorMessage = "Email must be a valid @gmail.com address.";
+            return false;
+        }
+
+        normalizedEmail = $"{normalizedLocal}@{AcceptedGmailDomain}";
+        errorMessage = string.Empty;
+        return true;
+    }
+
+    private static bool IsValidGmailSegments(string part, bool allowPlusSeparator)
+    {
+        if (string.IsNullOrEmpty(part))
+            return false;
+
+        var segmentLength = 0;
+        for (var i = 0; i < part.Length; i++)
+        {
+            var ch = part[i];
+            if (ch == '.' || (allowPlusSeparator && ch == '+'))
+            {
+                if (segmentLength == 0)
+                    return false;
+
+                segmentLength = 0;
+                continue;
+            }
+
+            if (!IsAllowedGmailLocalChar(ch))
+                return false;
+
+            segmentLength++;
+        }
+
+        return segmentLength > 0;
+    }
+
+    private static bool IsAllowedGmailLocalChar(char ch) =>
+        (ch >= 'a' && ch <= 'z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '_'
+        || ch == '-';
+
+    private static bool ContainsAsciiLetterOrDigit(string value)
+    {
+        foreach (var ch in value)
+        {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+                return true;
+        }
+
+        return false;
     }
 }

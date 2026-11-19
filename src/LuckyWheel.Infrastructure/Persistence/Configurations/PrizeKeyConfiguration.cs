@@ -42,6 +42,9 @@ public class PrizeKeyConfiguration : IEntityTypeConfiguration<PrizeKey>
             .IsRequired()
             .IsConcurrencyToken();
 
+        builder.Property(x => x.ReplacesPrizeKeyId)
+            .IsRequired(false);
+
         builder.HasOne<Prize>()
             .WithMany()
             .HasForeignKey(x => x.PrizeId)
@@ -52,8 +55,18 @@ public class PrizeKeyConfiguration : IEntityTypeConfiguration<PrizeKey>
             .HasForeignKey(x => x.AssignedSpinId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        builder.HasOne<PrizeKey>()
+            .WithMany()
+            .HasForeignKey(x => x.ReplacesPrizeKeyId)
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasIndex(x => x.CodeHash)
             .IsUnique();
+
+        builder.HasIndex(x => x.ReplacesPrizeKeyId)
+            .IsUnique()
+            .HasFilter("[ReplacesPrizeKeyId] IS NOT NULL");
 
         builder.HasIndex(x => new { x.PrizeId, x.Status, x.CreatedAtUtc });
 

@@ -43,7 +43,7 @@ public sealed class PublicWheelTestFactory : WebApplicationFactory<Program>
             if (slug != "active-wheel")
                 throw NotFoundException.WithCode("WHEEL_NOT_AVAILABLE", "Wheel is not available.");
 
-            if (request.Email == "alreadywon@gmail.com")
+            if (PublicSpinValidation.NormalizeEmail(request.Email!) == "alreadywon@gmail.com")
                 throw new ConflictException("EMAIL_ALREADY_WON", "This email has already won.");
 
             if (idempotencyKeyHeader == "reused-conflict-key")
@@ -155,12 +155,14 @@ public sealed class PublicWheelsEndpointTests(PublicWheelTestFactory factory) : 
         Assert.Equal("VALIDATION_ERROR", problem.GetProperty("errorCode").GetString());
     }
 
-    [Fact]
-    public async Task Spin_EmailAlreadyWon_Returns409ProblemDetailsWithEmailAlreadyWonCode()
+    [Theory]
+    [InlineData("alreadywon@gmail.com")]
+    [InlineData("  Already.Won+promo@GMAIL.COM  ")]
+    public async Task Spin_EmailAlreadyWon_Returns409ProblemDetailsWithEmailAlreadyWonCode(string email)
     {
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/api/public/wheels/active-wheel/spins")
         {
-            Content = JsonContent.Create(new SpinRequest("alreadywon@gmail.com", true))
+            Content = JsonContent.Create(new SpinRequest(email, true))
         };
         httpRequest.Headers.Add("Idempotency-Key", "valid-key-123");
 
@@ -202,5 +204,50 @@ public sealed class PublicWheelsEndpointTests(PublicWheelTestFactory factory) : 
         var doc = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("NoPrize", doc.GetProperty("result").GetString());
         Assert.Equal("RC-TEST-TOKEN", doc.GetProperty("receiptToken").GetString());
+    }
+}
+
+public sealed class PublicWheelsGmailValidationEndpointTests(PublicWheelTestFactory factory) : IClassFixture<PublicWheelTestFactory>
+{
+    private readonly HttpClient _client = factory.CreateClient();
+
+    [Theory]
+    [InlineData("user@googlemail.com")]
+    [InlineData(".user@gmail.com")]
+    [InlineData("user.@gmail.com")]
+    [InlineData("user..name@gmail.com")]
+    [InlineData("+tag@gmail.com")]
+    [InlineData("user+@gmail.com")]
+    [InlineData("user name@gmail.com")]
+    [InlineData("\u212A@gmail.com")]
+    public async Task Spin_InvalidGmailVariants_Returns400ValidationError(string invalidEmail)
+    {
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/api/public/wheels/active-wheel/spins")
+        {
+            Content = JsonContent.Create(new SpinRequest(invalidEmail, true))
+        };
+        httpRequest.Headers.Add("Idempotency-Key", "valid-key-gmail-1");
+
+        var response = await _client.SendAsync(httpRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_ERROR", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Spin_ValidGmailWithDotsAndPlusTag_Returns200SuccessResult()
+    {
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/api/public/wheels/active-wheel/spins")
+        {
+            Content = JsonContent.Create(new SpinRequest("  Quang.Dev+campaign@GMAIL.COM  ", true))
+        };
+        httpRequest.Headers.Add("Idempotency-Key", "valid-key-gmail-2");
+
+        var response = await _client.SendAsync(httpRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var doc = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("NoPrize", doc.GetProperty("result").GetString());
     }
 }

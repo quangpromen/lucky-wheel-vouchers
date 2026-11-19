@@ -18,6 +18,7 @@ public class PrizeKey : AuditableEntity
     public DateTime? RedeemedAtUtc { get; private set; }
     public DateTime? ExpiredAtUtc { get; private set; }
     public DateTime? CancelledAtUtc { get; private set; }
+    public Guid? ReplacesPrizeKeyId { get; private set; }
 
     public PrizeKey(
         Guid prizeId,
@@ -25,7 +26,8 @@ public class PrizeKey : AuditableEntity
         byte[] encryptedCode,
         byte[] encryptionNonce,
         byte[] encryptionTag,
-        DateTime createdAtUtc)
+        DateTime createdAtUtc,
+        Guid? replacesPrizeKeyId = null)
     {
         if (prizeId == Guid.Empty)
             throw new DomainException("PRIZE_KEY_INVALID_PRIZE_ID", "PrizeId cannot be empty.");
@@ -33,6 +35,8 @@ public class PrizeKey : AuditableEntity
             throw new DomainException("PRIZE_KEY_HASH_REQUIRED", "CodeHash is required.");
         if (encryptedCode is not { Length: > 0 } || encryptionNonce is not { Length: 12 } || encryptionTag is not { Length: 16 })
             throw new DomainException("PRIZE_KEY_ENCRYPTED_REQUIRED", "CodeEncrypted is required.");
+        if (replacesPrizeKeyId.HasValue && replacesPrizeKeyId.Value == Guid.Empty)
+            throw new DomainException("PRIZE_KEY_INVALID_REPLACEMENT_ID", "ReplacesPrizeKeyId cannot be empty.");
 
         PrizeId = prizeId;
         CodeHash = codeHash;
@@ -41,6 +45,37 @@ public class PrizeKey : AuditableEntity
         EncryptionTag = encryptionTag;
         Status = PrizeKeyStatus.Available;
         CreatedAtUtc = createdAtUtc;
+        ReplacesPrizeKeyId = replacesPrizeKeyId;
+    }
+
+    public static PrizeKey CreateReplacement(
+        Guid prizeId,
+        Guid spinId,
+        string codeHash,
+        byte[] encryptedCode,
+        byte[] encryptionNonce,
+        byte[] encryptionTag,
+        DateTime assignedAtUtc,
+        DateTime expiresAtUtc,
+        Guid replacesPrizeKeyId)
+    {
+        if (replacesPrizeKeyId == Guid.Empty)
+            throw new DomainException("PRIZE_KEY_INVALID_REPLACEMENT_ID", "ReplacesPrizeKeyId cannot be empty.");
+        if (spinId == Guid.Empty)
+            throw new DomainException("PRIZE_KEY_INVALID_SPIN_ID", "SpinId cannot be empty.");
+        if (expiresAtUtc <= assignedAtUtc)
+            throw new DomainException("PRIZE_KEY_INVALID_ASSIGNMENT_PERIOD", "ExpiresAtUtc must be greater than AssignedAtUtc.");
+
+        var key = new PrizeKey(prizeId, codeHash, encryptedCode, encryptionNonce, encryptionTag, assignedAtUtc, replacesPrizeKeyId)
+        {
+            Status = PrizeKeyStatus.Assigned,
+            AssignedSpinId = spinId,
+            AssignedAtUtc = assignedAtUtc,
+            ExpiresAtUtc = expiresAtUtc,
+            UpdatedAtUtc = assignedAtUtc
+        };
+
+        return key;
     }
 
     public void Assign(
